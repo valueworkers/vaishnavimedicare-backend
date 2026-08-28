@@ -1,0 +1,165 @@
+{% autoescape off %}
+<!-- Vaishnavi Medicare – OTP Email Template -->
+<body style="background-color: #f0f6f6; margin: 0; padding: 0; font-family: Arial, Helvetica, sans-serif;">
+
+    <table align="center" border="0" cellpadding="0" cellspacing="0"
+           style="max-width: 560px; width: 100%; margin: 30px auto; background-color: #ffffff;
+                  border-radius: 12px; overflow: hidden; border: 1px solid #d6e8e8;">
+        <tbody>
+
+            <!-- ── HEADER ── -->
+            <tr>
+                <td align="center"
+                    style="background-color: #0B6E6E; padding: 24px 24px 0 24px;
+                           border-radius: 12px 12px 0 0;">
+
+                    <a href="https://vaishnavimedicare.com/" style="text-decoration: none;">
+                        <table align="center" border="0" cellpadding="0" cellspacing="0">
+                            <tr>
+                                <td align="center" valign="middle"
+                                    style="width: 44px; height: 44px;
+                                           background-color: #ffffff;
+                                           border-radius: 8px;
+                                           font-size: 24px;
+                                           font-weight: bold;
+                                           color: #0B6E6E;
+                                           line-height: 44px;
+                                           text-align: center;
+                                           font-family: Arial, Helvetica, sans-serif;">
+                                    &#10011;
+                                </td>
+                                <td width="12">&nbsp;</td>
+                                <td valign="middle" align="left">
+                                    <p style="color: #ffffff; font-weight: bold; font-size: 19px;
+                                              margin: 0 0 2px 0; line-height: 1.2;
+                                              font-family: Arial, Helvetica, sans-serif;">
+                                        Vaishnavi Medicare
+                                    </p>
+                                    <p style="color: rgba(255,255,255,0.65); font-size: 11px;
+                                              margin: 0; letter-spacing: 0.4px;
+                                              font-family: Arial, Helvetica, sans-serif;">
+                                        vaishnavimedicare.com
+                                    </p>
+                                </td>
+                            </tr>
+                        </table>
+                    </a>
+
+                    <!-- Gold accent line -->
+                    <table border="0" cellpadding="0" cellspacing="0" width="100%"
+                           style="margin-top: 18px;">
+                        <tr>
+                            <td height="3" bgcolor="#C8A84B"
+                                style="height: 3px; font-size: 0; line-height: 0;">
+                                &nbsp;
+                            </td>
+                        </tr>
+                    </table>
+                </td>
+            </tr>
+
+            <!-- ── MAIN CONTENT ── -->
+            <tr>
+                <td align="center"
+                    style="padding: 32px 40px 28px 40px;
+                           border-bottom: 2px solid #0B6E6E;">
+
+                    <p style="font-weight: bold; font-size: 16px; color: #0B6E6E;
+                              margin: 0 0 10px 0;
+                              font-family: Arial, Helvetica, sans-serif;">
+                        Hello {{ user_name }},
+                    </p>
+
+                    <p style="font-size: 14px; color: #444444; margin: 0 0 22px 0;
+                              line-height: 1.7; font-family: Arial, Helvetica, sans-serif;">
+                        Use the OTP below to complete your verification.
+                        This OTP is valid for
+                        <strong style="color: #0B6E6E;">10 minutes</strong>:
+                    </p>
+
+                    <!-- OTP Code Box -->
+                    <table align="center" border="0" cellpadding="0" cellspacing="0">
+                        <tr>
+                            <td align="center"
+                                style="background-color: #E4F4F4;
+                                       border: 2px solid #0B6E6E;
+                                       border-radius: 10px;
+                                       padding: 12px 32px;">
+                                <p id="otp-value"
+                                   style="font-size: 30px; font-weight: bold;
+                                          color: #1A2428;
+                                          letter-spacing: 12px;
+                                          margin: 0; line-height: 1;
+                                          font-family: 'Courier New', Courier, monospace;">
+                                    {{ otp_code }}
+                                </p>
+                            </td>
+                        </tr>
+                    </table>
+
+                    <p style="font-size: 12px; color: #888888; margin: 22px 0 18px 0;
+                              line-height: 1.7; font-family: Arial, Helvetica, sans-serif;">
+                        If you didn&rsquo;t request this OTP, please ignore this email or
+                        <a href="https://vaishnavimedicare.com/"
+                           style="color: #0B6E6E; text-decoration: underline;">
+                            contact support
+                        </a>
+                        if you suspect any suspicious activity.
+                    </p>
+
+                    <p style="font-size: 14px; color: #0B6E6E; margin: 0;
+                              font-family: Arial, Helvetica, sans-serif;">
+                        Thank you for choosing Vaishnavi Medicare!
+                    </p>
+
+                </td>
+            </tr>
+
+            <!-- ── FOOTER ── -->
+            <tr>
+                <td align="center"
+                    style="background-color: #f0f6f6; padding: 16px 24px;
+                           border-radius: 0 0 12px 12px;">
+
+                    <p style="font-size: 11px; color: #9BB0B0; margin: 0 0 8px 0;
+                              font-family: Arial, Helvetica, sans-serif;">
+                        &#128274;&nbsp; Secured &amp; Encrypted Communication
+                    </p>
+
+                    <p style="font-size: 11px; color: #9BB0B0; margin: 0 0 6px 0;
+                              font-family: Arial, Helvetica, sans-serif;">
+                        <a href="https://vaishnavimedicare.com/"
+                           style="color: #5E7378; text-decoration: none;">Home</a>
+                        &nbsp;|&nbsp;
+                        <a href="https://vaishnavimedicare.com/"
+                           style="color: #5E7378; text-decoration: none;">Privacy Policy</a>
+                        &nbsp;|&nbsp;
+                        <a href="https://vaishnavimedicare.com/"
+                           style="color: #5E7378; text-decoration: none;">Contact Us</a>
+                    </p>
+
+                    <p style="font-size: 11px; color: #9BB0B0; margin: 0;
+                              font-family: Arial, Helvetica, sans-serif;">
+                        &copy; 2025 Vaishnavi Medicare. All rights reserved.
+                    </p>
+
+                </td>
+            </tr>
+
+        </tbody>
+    </table>
+
+    <style>
+        @media only screen and (max-width: 600px) {
+            table { width: 100% !important; }
+            td    { padding: 16px 12px !important; }
+            p     { font-size: 13px !important; }
+        }
+        #copy-btn:hover {
+            background-color: #0B6E6E !important;
+            color: #ffffff !important;
+        }
+    </style>
+
+</body>
+{% endautoescape %}
