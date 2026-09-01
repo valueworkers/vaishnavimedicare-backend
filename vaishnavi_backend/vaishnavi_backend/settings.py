@@ -68,26 +68,37 @@ MIDDLEWARE = [
 ]
 
 # ----------------- CORS & CSRF -----------------
+# =========================
+# CORS
+# =========================
 
 CORS_ALLOW_CREDENTIALS = True
-CORS_ALLOW_ALL_ORIGINS = True
-CSRF_TRUSTED_ORIGINS = [
-    "redis://*",
-    "http://localhost",
-    "http://127.0.0.1",
-    "http://localhost:5173",
-    "https://*.vercel.app",
-    "https://eventroop.vercel.app",
-    "https://eventroop-dev.vercel.app",
+
+CORS_ALLOWED_ORIGINS = [
     "https://vaishnavimedicare.com",
     "https://valueoccasions.com",
+    "https://168.144.213.88",
 ]
-SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
-SESSION_COOKIE_SAMESITE = 'None'
-CSRF_COOKIE_SAMESITE = 'None'
+
+
+CSRF_TRUSTED_ORIGINS = [
+    "https://vaishnavimedicare.com",
+    "https://valueoccasions.com",
+    "https://168.144.213.88",
+]
+
+SECURE_PROXY_SSL_HEADER = (
+    "HTTP_X_FORWARDED_PROTO",
+    "https",
+)
 
 SESSION_COOKIE_SECURE = True
 CSRF_COOKIE_SECURE = True
+
+SESSION_COOKIE_SAMESITE = "None"
+CSRF_COOKIE_SAMESITE = "None"
+
+# JavaScript needs to read the CSRF cookie
 CSRF_COOKIE_HTTPONLY = False
 
 # ----------------- WSGI, ASGI & URLS -----------------
@@ -129,7 +140,6 @@ CELERY_RESULT_BACKEND = REDIS_RESULTS_URL
 
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
 
-# TODO: currently working on 1 cpu because db is free version, Update later
 CELERY_ACCEPT_CONTENT    = ["json"]
 CELERY_TASK_SERIALIZER   = "json"
 CELERY_RESULT_SERIALIZER = "json"
