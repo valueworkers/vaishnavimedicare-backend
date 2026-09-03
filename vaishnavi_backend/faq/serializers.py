@@ -1,8 +1,34 @@
 from rest_framework import serializers
-from .models import FAQTopic, FAQItem
-from rest_framework import serializers
-from .models import Video
+from .models import FAQTopic, FAQItem, Video, Contact
 
+
+class ContactSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Contact
+        fields = [
+            "id",
+            "display_name",
+            "mobile_number",
+            "email",
+            "platform",
+            "url",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+    def validate(self, attrs):
+        # require at least one contact method
+        mobile = attrs.get("mobile_number", getattr(self.instance, "mobile_number", None))
+        email = attrs.get("email", getattr(self.instance, "email", None))
+        url = attrs.get("url", getattr(self.instance, "url", None))
+
+        if not any([mobile, email, url]):
+            raise serializers.ValidationError(
+                "At least one of mobile_number, email, or url must be provided."
+            )
+        return attrs
+    
 class VideoSerializer(serializers.ModelSerializer):
     
     class Meta:

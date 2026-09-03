@@ -1,10 +1,20 @@
 from rest_framework import viewsets, filters
-from .models import FAQTopic
-from .serializers import FAQTopicSerializer
+from .serializers import FAQTopicSerializer,ContactSerializer,VideoSerializer
 from .permissions import IsSuperUserOrOwnerOrReadOnly
-from .models import Video
-from .serializers import VideoSerializer
+from .models import Video,Contact,FAQTopic
 from rest_framework.parsers import MultiPartParser, FormParser
+
+
+
+class ContactViewSet(viewsets.ModelViewSet):
+    queryset = Contact.objects.all().order_by("-created_at")
+    serializer_class = ContactSerializer
+    permission_classes = [IsSuperUserOrOwnerOrReadOnly]
+
+    filterset_fields = ["platform"]
+    search_fields = ["display_name", "email", "mobile_number"]
+    ordering_fields = ["created_at", "display_name"]
+
 
 class FAQViewSet(viewsets.ModelViewSet):
     permission_classes = [IsSuperUserOrOwnerOrReadOnly]

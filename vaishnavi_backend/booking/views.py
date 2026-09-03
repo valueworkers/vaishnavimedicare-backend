@@ -5,6 +5,9 @@ from venue_manager.serializers import (
     VenueDropdownSerializer,
     ServiceDropdownSerializer
 )
+import calendar
+from datetime import date
+from rest_framework.exceptions import ValidationError
 
 from .utils import (
     DateParser, SecondaryOrderHelper,MonthAvailabilityChecker
@@ -20,7 +23,7 @@ from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser
 from django.utils.dateparse import parse_datetime
 from itertools import groupby
-from django.db.models import Sum,Count,Q,Prefetch
+from django.db.models import Sum,Count,Q,Prefetch,F
 from django.views.decorators.csrf import csrf_exempt
 from django.conf import settings
 import razorpay, hmac, hashlib, json
@@ -123,7 +126,8 @@ class PatientViewSet(viewsets.ModelViewSet):
         "registered_by",
         "registration_date",
         "is_registration_fees_paid",
-        'status',
+        "is_deleted",
+        "is_active",
     ]
 
     # Search 
@@ -159,17 +163,48 @@ class PatientViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         if user.is_superuser or user.is_owner:
-            return Patient.objects.all()
+            return Patient.objects.filter(is_deleted=False)
         
         # Manager/Staff/customer → only their own patients
-        return Patient.objects.filter(registered_by=user)
+        return Patient.objects.filter(registered_by=user, is_deleted=False)
     
     def perform_create(self, serializer):
         """
         Set registered_by = request.user automatically
         """
-        serializer.save(registered_by=self.request.user)
-     
+        serializer.save(registered_by=self.request.user,is_active=True)
+
+    def perform_destroy(self, instance):
+        if hasattr(instance, "soft_delete"):
+            instance.soft_delete()
+        else:
+            instance.delete()
+
+    @action(detail=True, methods=["patch"], url_path="active-status")
+    def active_status(self, request, pk=None):
+        """
+        PATCH /patients/{id}/active-status/
+        Body: {"is_active": true}  or  {"is_active": false}
+        """
+        patient = self.get_object()
+        is_active = request.data.get("is_active")
+
+        if is_active is None or not isinstance(is_active, bool):
+            return Response(
+                {"detail": "'is_active' (boolean) is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        patient.is_active = is_active
+        patient.save(update_fields=["is_active", "updated_at"])
+
+        return Response(
+            {
+                "status": patient.is_active,
+            },
+            status=status.HTTP_200_OK,
+        )
+    
     @action(detail=False, methods=["get"])
     def patient_dropdown(self, request):
         queryset = self.filter_queryset(self.get_queryset())
@@ -454,7 +489,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         'booking_type': ['exact'],
         'status': ['exact'],
     }
-    ordering_fields = ['user', 'patient', 'created_at', 'start_datetime', 'end_datetime']
+    ordering_fields = ['user', 'patient', 'created_at', 'start_datetime', 'end_datetime','total_bill']
     ordering = ['-created_at']
 
     # ── Queryset ───────────────────────────────────────────────────────────────
@@ -657,12 +692,12 @@ class OrderViewSet(viewsets.ModelViewSet):
         primary_order = self.get_object()
         user = request.user
 
-        # Permission Check
-        if not PermissionHelper.can_modify_order(user, primary_order):
-            return Response(
-                {"detail": "You do not have permission to modify this order."},
-                status=status.HTTP_403_FORBIDDEN
-            )
+        # # Permission Check
+        # if not PermissionHelper.can_modify_order(user, primary_order):
+        #     return Response(
+        #         {"detail": "You do not have permission to modify this order."},
+        #         status=status.HTTP_403_FORBIDDEN
+        #     )
 
         if primary_order.status == BookingStatus.CANCELLED:
             return Response(
@@ -1150,7 +1185,89 @@ class TotalInvoiceViewSet(viewsets.ModelViewSet):
     ]
     ordering = ['-created_at']
     
-    
+      # ── Constants ──────────────────────────────────────────────────────────────
+
+    FY_START_MONTH = 4
+
+    # ── FY helpers ─────────────────────────────────────────────────────────────
+
+    def _get_fy_range(self, fy_year):
+        """
+        FY2025 = Apr 2024 → Mar 2025
+        Returns (start_year, start_month, end_year, end_month)
+        """
+        return (fy_year - 1, self.FY_START_MONTH, fy_year, self.FY_START_MONTH - 1)
+
+    def _current_fy(self):
+        today = date.today()
+        return today.year if today.month < self.FY_START_MONTH else today.year + 1
+
+    def _cy_to_fy(self, cy_year, cy_month):
+        return cy_year + 1 if cy_month >= self.FY_START_MONTH else cy_year
+
+    # ── Filter parsers ─────────────────────────────────────────────────────────
+
+    def _parse_filters(self, request):
+        """
+        Parse year / month / year_type from query params.
+        month=0 → all months.
+        """
+        year_param      = request.query_params.get("year")
+        month_param     = request.query_params.get("month")
+        year_type_param = request.query_params.get("year_type", "CY").upper()
+
+        if year_type_param not in ("CY", "FY"):
+            raise ValidationError("year_type must be 'CY' or 'FY'.")
+
+        if not year_param:
+            year = self._current_fy() if year_type_param == "FY" else date.today().year
+        else:
+            try:
+                year = int(year_param)
+            except ValueError:
+                raise ValidationError("Year must be a valid integer.")
+
+        if month_param:
+            try:
+                month = int(month_param)
+            except ValueError:
+                raise ValidationError("Month must be a valid integer between 1 and 12.")
+            if not 1 <= month <= 12:
+                raise ValidationError("Month must be between 1 and 12.")
+        else:
+            month = 0
+
+        return year, month, year_type_param
+
+    def _apply_period_filter(self, queryset):
+        year, month, year_type = self._parse_filters(self.request)
+
+        if year_type == "FY":
+            start_year, start_month, end_year, end_month = self._get_fy_range(year)
+            if month == 0:
+                queryset = queryset.filter(
+                    period_end__gte=date(start_year, start_month, 1),
+                    period_end__lte=date(end_year, end_month, calendar.monthrange(end_year, end_month)[1])
+                )
+            else:
+                cy_year = start_year if month >= self.FY_START_MONTH else end_year
+                queryset = queryset.filter(
+                    period_end__year=cy_year,
+                    period_end__month=month
+                )
+        else:
+            # CY
+            if month == 0:
+                queryset = queryset.filter(period_end__year=year)
+            else:
+                queryset = queryset.filter(
+                    period_end__year=year,
+                    period_end__month=month
+                )
+
+        return queryset
+
+
     def get_queryset(self):
         queryset = super().get_queryset()
         user = self.request.user
@@ -1158,53 +1275,77 @@ class TotalInvoiceViewSet(viewsets.ModelViewSet):
         # Filter by customer
         if user.is_customer:
             queryset = queryset.filter(Q(patient__registered_by=user)|Q(user=user))
-    
-        return queryset
-    
+
+        return self._apply_period_filter(queryset)
+
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
 
-        pairs = list(
+        allowed_ordering = {
+            'registration_date', '-registration_date',
+            'total_invoice_amount', '-total_invoice_amount',
+            'total_paid', '-total_paid',
+            'total_balance', '-total_balance',
+            'patient_name', '-patient_name',
+        }
+        ordering_param = request.query_params.get('ordering')
+
+        groups = (
             queryset
-            .order_by('user_id', 'patient_id')
-            .values_list('user_id', 'patient_id')
-            .distinct()
+            .values('user_id', 'patient_id')
+            .annotate(
+                total_invoice_amount=Sum('total_amount'),
+                total_paid=Sum('paid_amount'),
+                total_balance=Sum('remaining_amount'),
+                patient_name=F('patient__first_name'),  # only if you want to order by name
+            )
         )
+        if ordering_param in allowed_ordering:
+            groups = groups.order_by(ordering_param)
+        else:
+            groups = groups.order_by('user_id', 'patient_id')
 
-        page = self.paginate_queryset(pairs)
-        active_pairs = page if page is not None else pairs
+        page = self.paginate_queryset(list(groups))
+        active_groups = page if page is not None else list(groups)
 
-        if not active_pairs:
+        if not active_groups:
             grouped_data = []
         else:
             pair_filter = Q()
-            for user_id, patient_id in active_pairs:
-                pair_filter |= Q(user_id=user_id, patient_id=patient_id)
+            for g in active_groups:
+                pair_filter |= Q(user_id=g['user_id'], patient_id=g['patient_id'])
 
-            # Heavy joins only run against this page's rows
-            invoices = queryset.filter(pair_filter)
+            invoices = (
+                queryset
+                .filter(pair_filter)
+                .select_related('user', 'patient')
+                .order_by('user_id', 'patient_id')
+            )
+
+            invoices_by_pair = {}
+            for inv in invoices:
+                invoices_by_pair.setdefault((inv.user_id, inv.patient_id), []).append(inv)
 
             grouped_data = []
-            for (user_id, patient_id), invoices_group in groupby(
-                invoices, key=lambda x: (x.user_id, x.patient_id)
-            ):
-                invoices_list = list(invoices_group)
+            for g in active_groups:
+                pair = (g['user_id'], g['patient_id'])
+                invoices_list = invoices_by_pair.get(pair, [])
+                if not invoices_list:
+                    continue
                 first_invoice = invoices_list[0]
                 user = first_invoice.user
                 patient = first_invoice.patient
-
-                total_invoice_amount = sum(inv.total_amount for inv in invoices_list)
-                total_paid = sum(inv.paid_amount for inv in invoices_list)
-                total_balance = total_invoice_amount - total_paid
 
                 grouped_data.append({
                     "user_id": user.id,
                     "user_name": user.get_full_name(),
                     "patient_id": patient.id,
                     "patient_name": patient.get_full_name(),
-                    "total_invoice_amount": str(total_invoice_amount),
-                    "total_paid": str(total_paid),
-                    "total_balance": str(total_balance),
+                    "patient_registration_date": patient.registration_date,
+                    "patient_phone": patient.phone,
+                    "total_invoice_amount": str(g['total_invoice_amount']),
+                    "total_paid": str(g['total_paid']),
+                    "total_balance": str(g['total_balance']),
                     "invoices": self.serializer_class(invoices_list, many=True).data
                 })
 
@@ -1212,7 +1353,7 @@ class TotalInvoiceViewSet(viewsets.ModelViewSet):
             return self.get_paginated_response(grouped_data)
         return Response(grouped_data)
 
-  
+ 
     @action(detail=True, methods=['get'])
     def recalculate(self, request, pk=None):
         """

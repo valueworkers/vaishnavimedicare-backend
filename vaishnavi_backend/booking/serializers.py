@@ -40,7 +40,9 @@ class PatientSerializer(serializers.ModelSerializer):
         source="registered_by.get_full_name", read_only=True
     )
     full_name = serializers.CharField(source="get_full_name", read_only=True)
-
+    location_type = serializers.ReadOnlyField()
+    emr_count = serializers.ReadOnlyField()
+    
     class Meta:
         model = Patient
         fields = "__all__"
@@ -50,6 +52,8 @@ class PatientSerializer(serializers.ModelSerializer):
             "name_registered_by",
             "registered_by",
             "registration_date",
+            "is_active"
+            "is_deleted",
             
         ]
 
@@ -615,7 +619,7 @@ class TotalInvoiceSerializer(serializers.ModelSerializer):
 class InvoiceSummarySerializer(serializers.Serializer):
     """Serializer for invoice summary / statistics"""
 
-    generated_invoices        = serializers.IntegerField()
+    generated_invoices    = serializers.IntegerField()
     total_amount          = serializers.DecimalField(max_digits=12, decimal_places=2)
     paid_amount           = serializers.DecimalField(max_digits=12, decimal_places=2)
     remaining_amount      = serializers.DecimalField(max_digits=12, decimal_places=2)

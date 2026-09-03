@@ -239,7 +239,6 @@ class Patient(models.Model):
     first_name = models.CharField(max_length=100)
     last_name = models.CharField(max_length=100)
     email = models.EmailField(null=True, blank=True)
-    status = models.BooleanField(default=True)
     
     # Contact Information
     phone = models.CharField(max_length=10, validators=[phone_regex])
@@ -281,10 +280,28 @@ class Patient(models.Model):
     )
     
     is_registration_fees_paid = models.BooleanField(default=False)
+    is_deleted = models.BooleanField(default=False)
+    is_active = models.BooleanField(default=True)
 
     registration_date = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    @property
+    def location_type(self):
+        """Most recent booking's type across PrimaryOrder and ContactBooking."""
+        latest_order = self.primaryorder_set.order_by('-created_at').first()
+        if latest_order:
+            return latest_order.booking_type
+        return None
+
+    @property
+    def emr_count(self):
+        return self.documents.count()
+    
+    def soft_delete(self):
+        self.is_active = False
+        self.is_deleted = True
+        self.save()
     
     class Meta:
         verbose_name = "Patient"
@@ -296,6 +313,7 @@ class Patient(models.Model):
             models.Index(fields=['-registration_date']),
             models.Index(fields=['registered_by']),
             models.Index(fields=['first_name', 'last_name']),
+            models.Index(fields=['is_active', 'is_deleted'])
         ]
     
     def __str__(self):
