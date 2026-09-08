@@ -490,7 +490,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         'status': ['exact'],
     }
     ordering_fields = ['user', 'patient', 'created_at', 'start_datetime', 'end_datetime','total_bill']
-    ordering = ['-created_at']
+    ordering = ['-patient']
 
     # ── Queryset ───────────────────────────────────────────────────────────────
     def get_queryset(self):
