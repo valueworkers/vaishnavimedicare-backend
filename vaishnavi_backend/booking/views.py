@@ -163,10 +163,10 @@ class PatientViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         if user.is_superuser or user.is_owner:
-            return Patient.objects.filter(is_deleted=False)
+            return Patient.objects.all()
         
         # Manager/Staff/customer → only their own patients
-        return Patient.objects.filter(registered_by=user, is_deleted=False)
+        return Patient.objects.filter(registered_by=user)
     
     def perform_create(self, serializer):
         """

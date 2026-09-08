@@ -9,9 +9,10 @@ from django.contrib.contenttypes import fields, models as ct_models
 from decimal import Decimal
 import uuid
 from .constants import *
-# TODO : remove functional auto_update_status from save method
 from datetime import timedelta,datetime, time
 from dateutil.relativedelta import relativedelta
+
+from django.db.models import Exists, OuterRef
 
 def calculate_amount(startdate, enddate, package):
     if not startdate or not enddate:
@@ -55,6 +56,49 @@ def auto_update_status(start_datetime,end_datetime):
     elif now > end_datetime:
         status = BookingStatus.FULFILLED
     return status
+
+def sync_patient_active_status():
+    """
+    Patient.status (active flag) = True if the patient has at least one
+    PrimaryOrder currently YET_TO_START or IN_PROGRESS, False otherwise.
+
+    Soft-deleted patients are left untouched — being inactive is implied
+    by is_deleted, and we don't want this task resurrecting them.
+    """
+    has_active_order = PrimaryOrder.objects.filter(
+        patient=OuterRef("pk"),
+        status__in= [
+            BookingStatus.LOBBY,
+            BookingStatus.HOLD,
+            BookingStatus.BOOKED,
+            BookingStatus.DELAYED,
+            BookingStatus.YET_TO_START,
+            BookingStatus.IN_PROGRESS,
+            BookingStatus.PARTIALLY_FULFILLED,
+            BookingStatus.MODIFIED,
+            BookingStatus.RESCHEDULED,
+        ],
+    )
+
+    patients = Patient.objects.filter(is_deleted=False).annotate(
+        has_active_order=Exists(has_active_order)
+    )
+
+    to_activate = list(
+        patients.filter(has_active_order=True, is_active=False)
+        .values_list("pk", flat=True)
+    )
+    to_deactivate = list(
+        patients.filter(has_active_order=False, is_active=True)
+        .values_list("pk", flat=True)
+    )
+
+    if to_activate:
+        Patient.objects.filter(pk__in=to_activate).update(is_active=True)
+    if to_deactivate:
+        Patient.objects.filter(pk__in=to_deactivate).update(is_active=False)
+
+    return {"activated": len(to_activate), "deactivated": len(to_deactivate)}
 
 def bulk_update_status(queryset, model):
     """Reusable helper — filters, computes, bulk updates."""
