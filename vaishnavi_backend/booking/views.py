@@ -23,7 +23,7 @@ from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser
 from django.utils.dateparse import parse_datetime
 from itertools import groupby
-from django.db.models import Sum,Count,Q,Prefetch,F
+from django.db.models import Subquery, Sum,Count,Q,Prefetch,F
 from django.views.decorators.csrf import csrf_exempt
 from django.conf import settings
 import razorpay, hmac, hashlib, json
@@ -133,40 +133,56 @@ class PatientViewSet(viewsets.ModelViewSet):
     # Search 
     search_fields = [
         "id",
-        "registered_by__first_name",
-        "registered_by__first_name",
-        "registered_by__email",
-        "registered_by__mobile_number",
+        "patient_id",
+        "first_name",
+        "last_name",
+        "=email",
+        "=phone"
+    ]
+
+    # Ordering
+    ordering_fields = [
+        "id",
         "patient_id",
         "first_name",
         "last_name",
         "email",
         "phone",
         "address",
+        "age",
         "emergency_contact",
         "emergency_phone",
         "emergency_contact_2",
         "emergency_phone_2",
+        "gender",
         "registration_date",
-    ]
-
-    # Ordering
-    ordering_fields = [
-        "registration_date",
-        "first_name",
-        "age",
-        "registration_fee",
+        "is_deleted",
+        "is_active",
+        "emr_count",
     ]
 
     ordering = ['-registration_date']
 
     def get_queryset(self):
         user = self.request.user
+
+        # Base queryset based on permissions
         if user.is_superuser or user.is_owner:
-            return Patient.objects.all()
-        
-        # Manager/Staff/customer → only their own patients
-        return Patient.objects.filter(registered_by=user)
+            queryset = Patient.objects.all()
+        else:
+            queryset = Patient.objects.filter(
+                registered_by=user
+            )
+
+        # Add calculated fields
+        queryset = queryset.annotate(
+            emr_count=Count(
+                "documents",
+                distinct=True,
+            ),
+        )
+
+        return queryset
     
     def perform_create(self, serializer):
         """
@@ -312,14 +328,14 @@ class LocationViewSet(viewsets.ModelViewSet):
     filterset_fields = ["location_type","user__first_name","user__email","user__mobile_number", "city", "state"]
     search_fields = [
         "user__first_name",
-        "user__email",
-        "user__mobile_number",
+        "=user__email",
+        "=user__mobile_number",
         "building_name",
         "address_line1",
         "locality",
         "city",
         "state",
-        "postal_code",
+        "=postal_code",
     ]
     
     def get_queryset(self):
@@ -473,15 +489,10 @@ class OrderViewSet(viewsets.ModelViewSet):
     search_fields = [
         'patient__id',
         'patient__patient_id',
-        'patient__phone',
-        'patient__phone',
-        'patient__email',
+        '=patient__phone',
+        '=patient__email',
         'patient__first_name',
         'patient__last_name',
-        'user__first_name',
-        'user__last_name',
-        'booking_entity',
-        'status'
     ]
     filterset_fields = {
         'patient': ['exact'],
@@ -489,7 +500,26 @@ class OrderViewSet(viewsets.ModelViewSet):
         'booking_type': ['exact'],
         'status': ['exact'],
     }
-    ordering_fields = ['user', 'patient', 'created_at', 'start_datetime', 'end_datetime','total_bill']
+
+    ordering_fields = [
+        'order_id',
+        'user',
+        'patient',
+        'venue',
+        'service',
+        'package',
+        'booking_entity',
+        'booking_type',
+        'status',
+        'discount_amount',
+        'premium_amount',
+        'total_bill',
+        'start_datetime',
+        'end_datetime',
+        'created_at',
+        'updated_at',
+    ]
+    
     ordering = ['-patient']
 
     # ── Queryset ───────────────────────────────────────────────────────────────
@@ -1160,9 +1190,8 @@ class TotalInvoiceViewSet(viewsets.ModelViewSet):
         'invoice_number',
         'patient__id',
         'patient__patient_id',
-        'patient__phone',
-        'patient__phone',
-        'patient__email',
+        '=patient__phone',
+        '=patient__email',
         'patient__first_name',
         'patient__last_name',
         'user__first_name',
@@ -1559,7 +1588,7 @@ class PaymentViewSet(viewsets.ModelViewSet):
         "reference",
         "method",
         "invoice__id",
-        "invoice__invoice_number",
+        "=invoice__invoice_number",
         "patient__first_name",
         "patient__last_name",
         "patient__phone",

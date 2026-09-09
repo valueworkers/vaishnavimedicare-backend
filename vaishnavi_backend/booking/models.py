@@ -338,10 +338,6 @@ class Patient(models.Model):
             return latest_order.booking_type
         return None
 
-    @property
-    def emr_count(self):
-        return self.documents.count()
-    
     def soft_delete(self):
         self.is_active = False
         self.is_deleted = True

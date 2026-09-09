@@ -12,7 +12,7 @@ class ContactViewSet(viewsets.ModelViewSet):
     permission_classes = [IsSuperUserOrOwnerOrReadOnly]
 
     filterset_fields = ["platform"]
-    search_fields = ["display_name", "email", "mobile_number"]
+    search_fields = ["display_name", "=email", "=mobile_number"]
     ordering_fields = ["created_at", "display_name"]
 
 

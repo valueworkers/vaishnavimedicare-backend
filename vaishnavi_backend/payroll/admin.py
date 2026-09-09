@@ -84,7 +84,7 @@ class SalaryStructureAdmin(admin.ModelAdmin):
     search_fields = (
         "user__first_name",
         "user__last_name",
-        "user__email",
+        "=user__email",
     )
 
     date_hierarchy = "effective_from"
@@ -148,7 +148,7 @@ class SalaryReportAdmin(admin.ModelAdmin):
     )
 
     search_fields = (
-        "user__email",
+        "=user__email",
         "user__first_name",
         "user__last_name",
     )

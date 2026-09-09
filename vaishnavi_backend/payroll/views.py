@@ -31,10 +31,10 @@ class SalaryStructureViewSet(viewsets.ModelViewSet):
     ]
 
     search_fields = [
-        "user__email",
         "user__first_name",
         "user__last_name",
-        "user__mobile_number",
+        "=user__email",
+        "=user__mobile_number",
     ]
 
     def get_queryset(self):
