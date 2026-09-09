@@ -502,25 +502,27 @@ class OrderViewSet(viewsets.ModelViewSet):
     }
 
     ordering_fields = [
+        'id',
         'order_id',
-        'user',
-        'patient',
-        'venue',
-        'service',
-        'package',
         'booking_entity',
         'booking_type',
         'status',
-        'discount_amount',
-        'premium_amount',
+        ('patient__first_name', 'patient'),
+        ('user__email', 'user'),
+        ('venue__name', 'venue'),
+        ('service__name', 'service'),
+        ('package__name', 'package'),
+        'client_address',
         'total_bill',
         'start_datetime',
         'end_datetime',
+        'auto_continue',
+        'discount_amount',
+        'premium_amount',
         'created_at',
         'updated_at',
     ]
-    
-    ordering = ['-patient']
+    ordering = ['-patient__first_name']  # or '-created_at' — see note below
 
     # ── Queryset ───────────────────────────────────────────────────────────────
     def get_queryset(self):
