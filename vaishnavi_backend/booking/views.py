@@ -1980,18 +1980,17 @@ class PaymentViewSet(viewsets.ModelViewSet):
 
 class PatientMonthAvailabilityView(APIView):
     """
-    Returns a day-by-day availability calendar for a patient + service
+    Returns a day-by-day availability calendar for a patient (all services)
     for the requested month.
 
     GET params / POST body:
         patient_id        int   required
-        service_id        int   required
-        month             int   required  (1-12)
-        year              int   required  (e.g. 2026)
-        exclude_order_id  int   optional  — skip a PrimaryOrder (reschedule)
+        month              int   required  (1-12)
+        year               int   required  (e.g. 2026)
+        exclude_order_id   int   optional  — skip a PrimaryOrder (reschedule)
 
     ── Example request ──────────────────────────────────────────────────────────
-    GET /api/bookings/availability/?patient_id=42&service_id=7&month=6&year=2025
+    GET /bookings/availability/?patient_id=42&month=6&year=2025
     """
 
     def get(self, request, *args, **kwargs):
@@ -2012,13 +2011,11 @@ class PatientMonthAvailabilityView(APIView):
 
         v = req_ser.validated_data
 
-        # 404 if patient or service don't exist — prevents silent empty results
+        # 404 if patient doesn't exist — prevents silent empty results
         patient = get_object_or_404(Patient, pk=v["patient_id"])
-        service = get_object_or_404(Service, pk=v["service_id"])
 
         checker = MonthAvailabilityChecker(
             patient_id       = patient.pk,
-            service_id       = service.pk,
             month            = v["month"],
             year             = v["year"],
             exclude_order_id = v.get("exclude_order_id"),

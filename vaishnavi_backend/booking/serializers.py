@@ -719,7 +719,6 @@ class SecondaryBulkActionSerializer(serializers.Serializer):
 # ── Request ────────────────────────────────────────────────────────────────────
 class MonthAvailabilityRequestSerializer(serializers.Serializer):
     patient_id       = serializers.IntegerField(min_value=1)
-    service_id       = serializers.IntegerField(min_value=1)
     month            = serializers.IntegerField(min_value=1, max_value=12)
     year             = serializers.IntegerField(min_value=2000, max_value=2100)
     exclude_order_id = serializers.IntegerField(required=False, allow_null=True)
@@ -766,7 +765,6 @@ class DayAvailabilitySerializer(serializers.Serializer):
 # ── Top-level response ─────────────────────────────────────────────────────────
 class MonthAvailabilityResponseSerializer(serializers.Serializer):
     patient_id     = serializers.IntegerField()
-    service_id     = serializers.IntegerField()
     month          = serializers.IntegerField()
     year           = serializers.IntegerField()
     month_label    = serializers.CharField()     # e.g. "June 2025"

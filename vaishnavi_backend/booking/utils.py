@@ -228,15 +228,13 @@ class SecondaryOrderHelper:
             SecondaryOrder.objects.filter(id__in=secondary_ids).update(status=new_status)
             TernaryOrder.objects.filter(secondary_order_id__in=secondary_ids).update(status=new_status)
 
-
 class MonthAvailabilityChecker:
     """
     For every calendar day in the given month, checks whether the patient
-    already has an active SecondaryOrder for the same service on that day.
+    already has an active SecondaryOrder (for any service) on that day.
 
     Args:
         patient_id:       PK of Patient record.
-        service_id:       PK of Service being booked.
         month:            1-12
         year:             e.g. 2025
         exclude_order_id: PrimaryOrder PK to skip (reschedule flows — prevents
@@ -246,13 +244,11 @@ class MonthAvailabilityChecker:
     def __init__(
         self,
         patient_id: int,
-        service_id: int,
         month: int,
         year: int,
         exclude_order_id: Optional[int] = None,
     ):
         self.patient_id       = patient_id
-        self.service_id       = service_id
         self.month            = month
         self.year             = year
         self.exclude_order_id = exclude_order_id
@@ -274,7 +270,6 @@ class MonthAvailabilityChecker:
 
         {
             patient_id:     int,
-            service_id:     int,
             month:          int,
             year:           int,
             month_label:    "June 2025",
@@ -315,6 +310,7 @@ class MonthAvailabilityChecker:
                 "start_datetime"     : sec.start_datetime,
                 "end_datetime"       : sec.end_datetime,
                 "status"             : sec.status,
+                "service_id"         : po.service_id,
                 "service_name"       : po.service.name if po.service else "—",
                 "package_name"       : po.package.name if po.package else "—",
                 "primary_order_id"   : po.order_id,
@@ -353,7 +349,6 @@ class MonthAvailabilityChecker:
 
         return {
             "patient_id"     : self.patient_id,
-            "service_id"     : self.service_id,
             "month"          : self.month,
             "year"           : self.year,
             "month_label"    : date(self.year, self.month, 1).strftime("%B %Y"),
@@ -375,12 +370,11 @@ class MonthAvailabilityChecker:
             SecondaryOrder.objects
             .filter(
                 primary_order__patient_id=self.patient_id,
-                primary_order__service_id=self.service_id,
                 start_datetime__lt=self.month_end,
                 end_datetime__gt=self.month_start,
             )
             .exclude(primary_order__status=BookingStatus.CANCELLED)
-            .exclude(status=BookingStatus.CANCELLED) 
+            .exclude(status=BookingStatus.CANCELLED)
             .select_related(
                 "primary_order",
                 "primary_order__service",
