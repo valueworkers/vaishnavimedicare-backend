@@ -551,7 +551,22 @@ class PaymentSerializer(serializers.ModelSerializer):
         default=None
     )
     is_mapped = serializers.SerializerMethodField(read_only=True)
-
+    invoice_status = serializers.CharField(
+        source="invoice.status",
+        read_only=True
+    )
+    total_amount = serializers.DecimalField(
+        source="invoice.total_amount",
+        read_only=True,
+        max_digits=10,
+        decimal_places=2
+    )
+    remaining_amount = serializers.DecimalField(
+            source="invoice.remaining_amount",
+            read_only=True,
+            max_digits=10,
+            decimal_places=2
+        )
     class Meta:
         model = Payment
         fields = '__all__'

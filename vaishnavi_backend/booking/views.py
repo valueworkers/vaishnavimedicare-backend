@@ -1593,7 +1593,7 @@ class PaymentViewSet(viewsets.ModelViewSet):
         "=invoice__invoice_number",
         "patient__first_name",
         "patient__last_name",
-        "patient__phone",
+        "=patient__phone",
         "patient__id",
     ]
     filterset_fields = {
@@ -1602,7 +1602,22 @@ class PaymentViewSet(viewsets.ModelViewSet):
         'method': ['exact'],
         'paid_date': ['month', 'year'],
     }
-    ordering_fields = ['created_at', 'amount', 'paid_date']
+    ordering_fields = [
+        'id',
+        'reference',
+        'method',
+        'is_verified',
+        ('patient__first_name', 'patient'),
+        ('patient__phone', 'patient_phone_number'),
+        ('invoice__invoice_number', 'invoice_number'),
+        ('invoice__status', 'invoice_status'),
+        ('invoice__total_amount', 'total_amount'),
+        ('invoice__remaining_amount', 'remaining_amount'),
+        'amount',
+        'paid_date',
+        'created_at',
+        'updated_at',
+    ]
     ordering = ['-created_at']
     
     def get_queryset(self):
