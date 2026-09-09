@@ -1329,6 +1329,7 @@ class TotalInvoiceViewSet(viewsets.ModelViewSet):
                 total_paid=Sum('paid_amount'),
                 total_balance=Sum('remaining_amount'),
                 patient_name=F('patient__first_name'),  # only if you want to order by name
+                registration_date=F('patient__registration_date'),  # was missing
             )
         )
         if ordering_param in allowed_ordering:
