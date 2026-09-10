@@ -551,7 +551,7 @@ class OrderViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(start_datetime__gte=start_date)
 
         if end_date := self.request.query_params.get('end_date'):
-            queryset = queryset.filter(start_datetime__lte=end_date)
+            queryset = queryset.filter(end_datetime__lte=end_date)
 
         if self.request.query_params.get('upcoming'):
             queryset = queryset.filter(start_datetime__gt=now)
@@ -1588,21 +1588,29 @@ class PaymentViewSet(viewsets.ModelViewSet):
     - Tracking payment methods
     """
     search_fields = [
-        "reference",
-        "method",
-        "invoice__id",
         "=invoice__invoice_number",
         "patient__first_name",
         "patient__last_name",
         "=patient__phone",
         "patient__id",
     ]
+
     filterset_fields = {
         'invoice_id': ['exact'],
         'is_verified': ['exact'],
         'method': ['exact'],
         'paid_date': ['month', 'year'],
+
+        # Patient filters
+        'patient': ['exact'],
+
+        # Invoice filters
+        'invoice__invoice_number': ['exact', 'icontains'],
+        'invoice__status': ['exact'],
+        'invoice__total_amount': ['exact', 'gte', 'lte'],
+        'invoice__remaining_amount': ['exact', 'gte', 'lte'],
     }
+    
     ordering_fields = [
         'id',
         'reference',
