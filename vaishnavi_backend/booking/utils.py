@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, time, datetime,timedelta
 from django.core.exceptions import ValidationError
 from django.utils import timezone
-from django.db.models import QuerySet
+from django.db.models import Prefetch, QuerySet
 
 from .constants import BookingStatus,PeriodChoices
 from .models import PrimaryOrder, SecondaryOrder, TernaryOrder 
@@ -228,17 +228,14 @@ class SecondaryOrderHelper:
             SecondaryOrder.objects.filter(id__in=secondary_ids).update(status=new_status)
             TernaryOrder.objects.filter(secondary_order_id__in=secondary_ids).update(status=new_status)
 
+# ── Checker ──────────────────────────────────────────────────────────────────
+
 class MonthAvailabilityChecker:
     """
     For every calendar day in the given month, checks whether the patient
     already has an active SecondaryOrder (for any service) on that day.
-
-    Args:
-        patient_id:       PK of Patient record.
-        month:            1-12
-        year:             e.g. 2025
-        exclude_order_id: PrimaryOrder PK to skip (reschedule flows — prevents
-                          the order being rescheduled from conflicting itself).
+    Each booking entry also carries its non-cancelled TernaryOrder line
+    items, if any exist.
     """
 
     def __init__(
@@ -253,57 +250,36 @@ class MonthAvailabilityChecker:
         self.year             = year
         self.exclude_order_id = exclude_order_id
 
-        # Compute month boundaries once
         self.last_day    = calendar.monthrange(year, month)[1]
-        self.month_start = datetime(
-            year, month, 1, 0, 0, 0
-        )
-        self.month_end = datetime(
-            year, month, self.last_day, 23, 59, 59
-        )
+        self.month_start = datetime(year, month, 1, 0, 0, 0)
+        self.month_end   = datetime(year, month, self.last_day, 23, 59, 59)
 
     # ── Public ─────────────────────────────────────────────────────────────────
 
     def check(self) -> dict:
-        """
-        Returns a dict ready for MonthAvailabilityResponseSerializer:
-
-        {
-            patient_id:     int,
-            month:          int,
-            year:           int,
-            month_label:    "June 2025",
-            total_days:     30,
-            available_days: 26,
-            occupied_days:  4,
-            past_days:      12,
-            calendar: [
-                {
-                    date:         date(2025, 6, 1),
-                    is_available: True,
-                    is_past:      False,
-                    bookings:     []
-                },
-                {
-                    date:         date(2025, 6, 5),
-                    is_available: False,
-                    is_past:      False,
-                    bookings:     [ { secondary_order_id, order_id, ... } ]
-                },
-                ...
-            ]
-        }
-        """
-
         qs = self._build_queryset(SecondaryOrder)
 
-        # Build date → [booking_dict, ...] map, clamped to this month
         month_first = date(self.year, self.month, 1)
         month_last  = date(self.year, self.month, self.last_day)
-        date_bookings: dict[datetime.date, list[dict]] = {}
+        date_bookings: dict[date, list[dict]] = {}
 
         for sec in qs:
             po = sec.primary_order
+
+            ternary_orders = [
+                {
+                    "ternary_order_id" : t.pk,
+                    "order_id"         : t.order_id,
+                    "start_datetime"   : t.start_datetime,
+                    "end_datetime"     : t.end_datetime,
+                    "status"           : t.status,
+                    "service_name"     : t.service.name if t.service else "—",
+                    "package_name"     : t.package.name,
+                    "venue_name"       : t.venue.name if t.venue else "—",
+                }
+                for t in sec.ternary_orders.all()  # prefetched, cancelled excluded
+            ]
+
             booking = {
                 "secondary_order_id" : sec.pk,
                 "order_id"           : sec.order_id,
@@ -315,15 +291,15 @@ class MonthAvailabilityChecker:
                 "package_name"       : po.package.name if po.package else "—",
                 "primary_order_id"   : po.order_id,
                 "booking_type"       : po.booking_type,
+                "ternary_orders"     : ternary_orders,
             }
-            # Clamp slot to month boundaries, then stamp each day
+
             cursor = max(sec.start_datetime.date(), month_first)
             end    = min(sec.end_datetime.date(),   month_last)
             while cursor <= end:
                 date_bookings.setdefault(cursor, []).append(booking)
                 cursor += timedelta(days=1)
 
-        # Build the calendar row for every day of the month
         today         = timezone.now().date()
         calendar_rows = []
         past_days     = 0
@@ -366,6 +342,14 @@ class MonthAvailabilityChecker:
         Overlap condition (covers all 4 overlap cases):
             slot.start < month_end  AND  slot.end > month_start
         """
+        active_ternaries = Prefetch(
+            "ternary_orders",
+            queryset=TernaryOrder.objects
+                .exclude(status=BookingStatus.CANCELLED)
+                .select_related("service", "venue", "package")
+                .order_by("start_datetime"),
+        )
+
         qs = (
             SecondaryOrder.objects
             .filter(
@@ -381,6 +365,7 @@ class MonthAvailabilityChecker:
                 "primary_order__package",
                 "primary_order__venue",
             )
+            .prefetch_related(active_ternaries)
             .order_by("start_datetime")
         )
 

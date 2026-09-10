@@ -731,7 +731,7 @@ class SecondaryBulkActionSerializer(serializers.Serializer):
         help_text="Whether to notify customer of Action"
     )
 
-# ── Request ────────────────────────────────────────────────────────────────────
+# ── Availability ──────────────────────────────────────────────────────────────
 class MonthAvailabilityRequestSerializer(serializers.Serializer):
     patient_id       = serializers.IntegerField(min_value=1)
     month            = serializers.IntegerField(min_value=1, max_value=12)
@@ -755,34 +755,39 @@ class MonthAvailabilityRequestSerializer(serializers.Serializer):
             )
         return data
 
+class TernaryOrderDetailSerializer(serializers.Serializer):
+    ternary_order_id = serializers.IntegerField()
+    order_id         = serializers.CharField()
+    start_datetime   = serializers.DateTimeField()
+    end_datetime     = serializers.DateTimeField()
+    status           = serializers.CharField()
+    service_name     = serializers.CharField()
+    package_name     = serializers.CharField()
+    venue_name       = serializers.CharField()
 
-# ── Nested booking detail (one entry per SecondaryOrder on a day) ─────────────
 class BookingDetailSerializer(serializers.Serializer):
     secondary_order_id = serializers.IntegerField()
     order_id           = serializers.CharField()
     start_datetime     = serializers.DateTimeField()
     end_datetime       = serializers.DateTimeField()
-    status             = serializers.CharField()
-    service_name       = serializers.CharField()
-    package_name       = serializers.CharField()
-    primary_order_id   = serializers.CharField()
-    booking_type       = serializers.CharField()
+    status              = serializers.CharField()
+    service_name        = serializers.CharField()
+    package_name         = serializers.CharField()
+    primary_order_id     = serializers.CharField()
+    booking_type          = serializers.CharField()
+    ternary_orders         = TernaryOrderDetailSerializer(many=True)
 
-
-# ── One entry per calendar day ─────────────────────────────────────────────────
 class DayAvailabilitySerializer(serializers.Serializer):
     date         = serializers.DateField()
     is_available = serializers.BooleanField()
     is_past      = serializers.BooleanField()
     bookings     = BookingDetailSerializer(many=True)
 
-
-# ── Top-level response ─────────────────────────────────────────────────────────
 class MonthAvailabilityResponseSerializer(serializers.Serializer):
     patient_id     = serializers.IntegerField()
     month          = serializers.IntegerField()
     year           = serializers.IntegerField()
-    month_label    = serializers.CharField()     # e.g. "June 2025"
+    month_label    = serializers.CharField()
     total_days     = serializers.IntegerField()
     available_days = serializers.IntegerField()
     occupied_days  = serializers.IntegerField()

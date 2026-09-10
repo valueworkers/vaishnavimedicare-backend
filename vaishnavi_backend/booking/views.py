@@ -2037,7 +2037,7 @@ class PatientMonthAvailabilityView(APIView):
     for the requested month.
 
     GET params / POST body:
-        patient_id        int   required
+        patient_id         int   required
         month              int   required  (1-12)
         year               int   required  (e.g. 2026)
         exclude_order_id   int   optional  — skip a PrimaryOrder (reschedule)
