@@ -522,7 +522,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         'created_at',
         'updated_at',
     ]
-    ordering = ['-patient__first_name']  # or '-created_at' — see note below
+    ordering = ['-created_at']  # or '-created_at' — see note below
 
     # ── Queryset ───────────────────────────────────────────────────────────────
     def get_queryset(self):
@@ -558,8 +558,6 @@ class OrderViewSet(viewsets.ModelViewSet):
 
         if self.request.query_params.get('ongoing'):
             queryset = queryset.filter(start_datetime__lte=now, end_datetime__gte=now)
-
-        # REMOVED: duplicate 'upcoming' filter block that was here
 
         if self.request.query_params.get('past_order'):
             queryset = queryset.filter(end_datetime__lt=now)
