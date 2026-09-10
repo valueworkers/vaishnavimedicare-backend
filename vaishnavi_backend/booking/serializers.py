@@ -649,6 +649,22 @@ class TotalInvoiceSerializer(serializers.ModelSerializer):
     def get_booking(self, obj):
         """Extract booking details from secondary or ternary order"""
 
+        def _resolve_location(entity, venue):
+            """
+            entity: object exposing `booking_type` and `client_address`
+            venue:  the Venue instance (or None) associated with that entity
+            """
+            booking_type = entity.booking_type
+    
+            if booking_type == BookingType.CLIENT_SIDE:
+                return entity.client_address
+    
+            if booking_type == BookingType.IN_HOUSE:
+                return venue.name if venue else None
+    
+            # OPD — prefer client_address, fall back to venue
+            return entity.client_address or (venue.name if venue else None)
+
         secondary = obj.secondary_order
         ternary = obj.ternary_order
 
@@ -664,8 +680,10 @@ class TotalInvoiceSerializer(serializers.ModelSerializer):
                 "venue": booking_obj.venue.name if booking_obj.venue else None,
                 "locality": booking_obj.venue.location.locality if booking_obj.venue else None,
                 "location": booking_obj.venue.location.full_address() if booking_obj.venue else None,
-                "service":  secondary.booking_service,
-                "package":  secondary.booking_package
+                "service": secondary.booking_service,
+                "package": secondary.booking_package,
+                "location_type": booking_obj.booking_type,
+                "address": _resolve_location(booking_obj, booking_obj.venue),
             }
 
         # Case 2: Ternary Order
@@ -681,10 +699,12 @@ class TotalInvoiceSerializer(serializers.ModelSerializer):
                 "venue": booking_obj.venue.name if booking_obj.venue else None,
                 "locality": booking_obj.venue.location.locality if booking_obj.venue else None,
                 "location": booking_obj.venue.location.full_address() if booking_obj.venue else None,
-                "service":  ternary.booking_service,
-                "package":  ternary.booking_package
+                "service": ternary.booking_service,
+                "package": ternary.booking_package,
+                "location_type": ternary.booking_type,
+                "address": _resolve_location(ternary, ternary.venue),
             }
-
+    
 class InvoiceSummarySerializer(serializers.Serializer):
     """Serializer for invoice summary / statistics"""
 
