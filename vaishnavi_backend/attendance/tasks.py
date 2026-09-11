@@ -1,10 +1,14 @@
 # attendance/tasks.py
+import logging
+from datetime import timedelta, date
+
 from celery import shared_task
 from django.utils import timezone
-from datetime import date
+
 from attendance.models import Attendance, AttendanceStatus
 from accounts.models import CustomUser
 
+logger = logging.getLogger(__name__)
 
 @shared_task
 def mark_attendance_present():
@@ -82,4 +86,69 @@ def mark_attendance_present():
             'status': 'warning',
             'message': "No new attendance records to create."
         }
-        
+
+ # attendance/tasks.py (additions)
+
+def _active_staff_ids():
+    managers = CustomUser.objects.managers().values_list('id', flat=True)
+    staff = CustomUser.objects.staff().values_list('id', flat=True)
+    return list(managers) + list(staff)
+
+def find_missing_attendance(start_date, end_date):
+    """
+    Read-only audit. Returns [(user_id, date), ...] for every staff/manager
+    user with no Attendance record on a given date in [start_date, end_date].
+    Use this to see the size of a gap before deciding whether to backfill it.
+    """
+    user_ids = _active_staff_ids()
+    if not user_ids:
+        return []
+
+    total_days = (end_date - start_date).days + 1
+    all_dates = [start_date + timedelta(days=i) for i in range(total_days)]
+
+    existing = set(
+        Attendance.objects.filter(
+            user_id__in=user_ids,
+            date__range=(start_date, end_date),
+        ).values_list('user_id', 'date')
+    )
+
+    return [
+        (user_id, d)
+        for user_id in user_ids
+        for d in all_dates
+        if (user_id, d) not in existing
+    ]
+
+@shared_task
+def backfill_missing_attendance(days_back=7):
+    """
+    Finds gaps in the last `days_back` days (never touches today — that's
+    mark_attendance_present's job) and fills each with Present, same
+    default the daily task applies. Meant as an occasional safety-net run
+    (manual, or a low-frequency beat entry), not the primary marking path.
+    """
+    try:
+        present_status = AttendanceStatus.objects.get(code='PRESENT')
+    except AttendanceStatus.DoesNotExist:
+        logger.error("backfill_missing_attendance: AttendanceStatus 'PRESENT' not found")
+        return {'status': 'error', 'message': "AttendanceStatus 'PRESENT' not found."}
+
+    today = timezone.localdate()
+    end_date = today - timedelta(days=1)
+    start_date = end_date - timedelta(days=days_back - 1)
+
+    missing = find_missing_attendance(start_date, end_date)
+    if not missing:
+        logger.info("backfill_missing_attendance: no gaps (%s to %s)", start_date, end_date)
+        return {'status': 'success', 'created': 0}
+
+    records = [
+        Attendance(user_id=user_id, date=d, status=present_status, duration=None)
+        for user_id, d in missing
+    ]
+    created = Attendance.objects.bulk_create(records, batch_size=5000, ignore_conflicts=True)
+
+    logger.info("backfill_missing_attendance: created %d (%s to %s)", len(created), start_date, end_date)
+    return {'status': 'success', 'created': len(created)}       
