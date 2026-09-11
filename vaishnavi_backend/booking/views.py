@@ -1182,6 +1182,8 @@ class TotalInvoiceViewSet(viewsets.ModelViewSet):
     ]
     
     filterset_fields = {
+        'patient__first_name': ['exact', 'icontains'], 
+        'patient__last_name': ['exact', 'icontains'],
         'patient': ['exact'],
         'period_start': ['gte'],
         'period_end': ['lte'],
@@ -1191,7 +1193,8 @@ class TotalInvoiceViewSet(viewsets.ModelViewSet):
     }
 
     ordering_fields = [
-        'user', 'patient', 'created_at', 'period_start', 'period_end',
+        'user', 'patient','patient__first_name','patient__last_name',
+        'created_at', 'period_start', 'period_end',
         'issued_date', 'status', 'total_amount'
     ]
     ordering = ['-created_at']
@@ -1297,7 +1300,8 @@ class TotalInvoiceViewSet(viewsets.ModelViewSet):
             'total_invoice_amount', '-total_invoice_amount',
             'total_paid', '-total_paid',
             'total_balance', '-total_balance',
-            'patient_name', '-patient_name',
+            'patient_first_name', '-patient_first_name',
+            'patient_last_name', '-patient_last_name',
         }
         ordering_param = request.query_params.get('ordering')
 
@@ -1308,8 +1312,9 @@ class TotalInvoiceViewSet(viewsets.ModelViewSet):
                 total_invoice_amount=Sum('total_amount'),
                 total_paid=Sum('paid_amount'),
                 total_balance=Sum('remaining_amount'),
-                patient_name=F('patient__first_name'),  # only if you want to order by name
-                registration_date=F('patient__registration_date'),  # was missing
+                patient_first_name=F('patient__first_name'),
+                patient_last_name=F('patient__last_name'),   
+                registration_date=F('patient__registration_date'),
             )
         )
         if ordering_param in allowed_ordering:
