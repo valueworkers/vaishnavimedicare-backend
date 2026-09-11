@@ -684,6 +684,30 @@ class PrimaryOrder(models.Model):
             SecondaryOrder.objects.bulk_update(created, ["order_id"])
             self.recalculate_total()
 
+    def generate_next_period_secondary(self):
+        """
+        Extends this PrimaryOrder's end_datetime by one package period and
+        delegates to generate_secondary_full_range_dates() to materialize the
+        new SecondaryOrder — reuses the same period math and upsert-on-conflict
+        semantics as the rest of the generation flow. Called nightly by
+        trigger_auto_continue_secondary_orders.
+        """
+        if not self.auto_continue:
+            return None
+
+        period_type = self.package.period
+        if period_type == PeriodChoices.MONTHLY:
+            new_end = self.end_datetime + relativedelta(months=1)
+        elif period_type == PeriodChoices.WEEKLY:
+            new_end = self.end_datetime + timedelta(days=7)
+        else:  # DAILY / HOURLY
+            new_end = self.end_datetime + timedelta(days=1)
+
+        with transaction.atomic():
+            self.end_datetime = new_end
+            self.save(update_fields=["end_datetime"])
+            self.generate_secondary_full_range_dates(upcoming_only=True)
+            
     # ── Period helpers ─────────────────────────────────────────────────────────
     def _get_monthly_periods(self):
         """

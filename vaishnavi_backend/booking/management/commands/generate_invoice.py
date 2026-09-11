@@ -23,7 +23,7 @@ class Command(BaseCommand):
     def handle(self, *args, **kwargs):
         orders = SecondaryOrder.objects.filter(
             status='FULFILLED',
-            # invoices__isnull=True
+            invoices__isnull=True
         )
         total_invoices = TotalInvoice.objects.all()
         before_count = total_invoices.count()
@@ -33,7 +33,7 @@ class Command(BaseCommand):
         
         for i, order in enumerate(orders):
             pass
-            # handle_secondary_order_update(order)
-            # self.stdout.write(self.style.SUCCESS(f"{i}) {order.order_id} {order.invoices.first().invoice_number if order.invoices.first() else 'N/A'} is generated "))
+            handle_secondary_order_update(order)
+            self.stdout.write(self.style.SUCCESS(f"{i}) {order.order_id} {order.invoices.first().invoice_number if order.invoices.first() else 'N/A'} is generated "))
         self.stdout.write(self.style.SUCCESS(f"Total Number of Invoices generated : {total_invoices.count()-before_count}"))
 

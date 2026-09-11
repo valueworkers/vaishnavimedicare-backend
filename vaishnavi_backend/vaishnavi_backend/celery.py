@@ -11,25 +11,27 @@ app = Celery('vaishnavi_backend')
 app.config_from_object('django.conf:settings', namespace='CELERY')
 app.autodiscover_tasks()
 
+
 app.conf.beat_schedule = {
-    'daily-digest': {
-        'task': 'notifications.tasks.send_daily_digest',
-        'schedule': crontab(hour=8, minute=0),
-    },
+    # 'daily-digest': {
+    #     'task': 'notifications.tasks.send_daily_digest',
+    #     'schedule': crontab(hour=8, minute=0),
+    # },
     'mark-attendance-present': {
         'task': 'attendance.tasks.mark_attendance_present',
         'schedule': crontab(hour=0, minute=0),
     },
     'update-booking-status': {
         'task': 'booking.tasks.update_statuses_by_time',
-        'schedule': schedule(timedelta(minutes=5)),
+        'schedule': crontab(minute='*/5'),          # :00, :05, :10 ... — must run before invoice reconciliation
     },
-
-    "auto-continue-orders": {
-        "task": "booking.tasks.trigger_auto_continue_secondary_orders",
-        "schedule": crontab(hour=23, minute=30),   # run nightly at 23:30
-    }
-
+    'auto-continue-orders': {
+        'task': 'booking.tasks.trigger_auto_continue_secondary_orders',
+        'schedule': crontab(hour=23, minute=30),    # nightly
+    },
+    'reconcile-missing-invoices': {
+        'task': 'booking.tasks.reconcile_invoices',
+        'schedule': crontab(minute='2-59/15'),      # :02, :17, :32, :47 — 2 min after each status sweep
+    },
 }
-
 app.conf.timezone = settings.TIME_ZONE
