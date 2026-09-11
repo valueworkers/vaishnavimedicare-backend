@@ -152,3 +152,5 @@ def backfill_missing_attendance(days_back=7):
 
     logger.info("backfill_missing_attendance: created %d (%s to %s)", len(created), start_date, end_date)
     return {'status': 'success', 'created': len(created)}       
+
+    
