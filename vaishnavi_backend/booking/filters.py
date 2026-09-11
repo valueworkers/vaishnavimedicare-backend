@@ -1,4 +1,6 @@
 
+import django_filters
+from .models import Patient
 from django_filters import rest_framework as filters
 from django.db.models import Q
 
@@ -132,3 +134,20 @@ class EntityFilter(filters.FilterSet):
         if hasattr(queryset.model, "capacity"):
             return queryset.filter(capacity__lte=value)
         return queryset
+
+class PatientFilter(django_filters.FilterSet):
+    location_type = django_filters.CharFilter(field_name='location_type',label='Location Type')
+    emr_count = django_filters.NumberFilter(field_name='emr_count',label='EMR Count')
+
+    class Meta:
+        model = Patient
+        fields = [
+            "location_type",
+            "gender",
+            "blood_group",
+            "registered_by",
+            "registration_date",
+            "is_registration_fees_paid",
+            "is_deleted",
+            "is_active",
+        ]

@@ -322,21 +322,13 @@ class Patient(models.Model):
         blank=True,
         validators=[MinValueValidator(1950), MaxValueValidator(timezone.localtime().year)]
     )
-    
+
     is_registration_fees_paid = models.BooleanField(default=False)
     is_deleted = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
 
     registration_date = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-
-    @property
-    def location_type(self):
-        """Most recent booking's type across PrimaryOrder and ContactBooking."""
-        latest_order = self.primaryorder_set.order_by('-created_at').first()
-        if latest_order:
-            return latest_order.booking_type
-        return None
 
     def soft_delete(self):
         self.is_active = False

@@ -16,14 +16,14 @@ from rest_framework import viewsets, permissions, status
 from .serializers import *
 from .constants import RAZORPAY_CLIENT
 from .models import *
-from .filters import EntityFilter
+from .filters import EntityFilter,PatientFilter
 from rest_framework.decorators import action
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser
 from django.utils.dateparse import parse_datetime
 from itertools import groupby
-from django.db.models import Subquery, Sum,Count,Q,Prefetch,F
+from django.db.models import Max, Subquery, Sum,Count,Q,Prefetch,F
 from django.views.decorators.csrf import csrf_exempt
 from django.conf import settings
 import razorpay, hmac, hashlib, json
@@ -116,31 +116,18 @@ class ContactBookingViewSet(viewsets.ModelViewSet):
         serializer.save(booked_by=self.request.user)
 
 class PatientViewSet(viewsets.ModelViewSet):
-    queryset = Patient.objects.all()
     serializer_class = PatientSerializer
-    
-    # Simple filtering
-    filterset_fields = [
-        "gender",
-        "blood_group",
-        "registered_by",
-        "registration_date",
-        "is_registration_fees_paid",
-        "is_deleted",
-        "is_active",
-    ]
+    filterset_class = PatientFilter
 
-    # Search 
     search_fields = [
         "id",
         "patient_id",
         "first_name",
         "last_name",
         "=email",
-        "=phone"
+        "=phone",
     ]
 
-    # Ordering
     ordering_fields = [
         "id",
         "patient_id",
@@ -158,6 +145,7 @@ class PatientViewSet(viewsets.ModelViewSet):
         "registration_date",
         "is_deleted",
         "is_active",
+        "location_type",
         "emr_count",
     ]
 
@@ -166,20 +154,14 @@ class PatientViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
 
-        # Base queryset based on permissions
         if user.is_superuser or user.is_owner:
             queryset = Patient.objects.all()
         else:
-            queryset = Patient.objects.filter(
-                registered_by=user
-            )
+            queryset = Patient.objects.filter(registered_by=user)
 
-        # Add calculated fields
         queryset = queryset.annotate(
-            emr_count=Count(
-                "documents",
-                distinct=True,
-            ),
+            emr_count=Count("documents", distinct=True),
+            location_type=Max('primaryorder__booking_type', default=None),
         )
 
         return queryset
