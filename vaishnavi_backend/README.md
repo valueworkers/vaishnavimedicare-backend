@@ -12,6 +12,7 @@ It provides end-to-end management including venue listings, complex order workfl
 
 ---
 
+
 ## Tech Stack
 
 | Layer | Technology |
