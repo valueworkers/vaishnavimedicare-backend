@@ -19,16 +19,16 @@ app.conf.beat_schedule = {
     # },
     'mark-attendance-present': {
         'task': 'attendance.tasks.mark_attendance_present',
-        'schedule': crontab(hour=0, minute=0),
+        'schedule': crontab(hour=0, minute=0), 
     },
     'update-booking-status': {
         'task': 'booking.tasks.update_statuses_by_time',
         'schedule': crontab(minute='*/5'),          # :00, :05, :10 ... — must run before invoice reconciliation
     },
-    'auto-continue-orders': {
-        'task': 'booking.tasks.trigger_auto_continue_secondary_orders',
-        'schedule': crontab(hour=23, minute=30),    # nightly
-    },
+    # 'auto-continue-orders': {
+    #     'task': 'booking.tasks.trigger_auto_continue_secondary_orders',
+    #     'schedule': crontab(hour=23, minute=30),    # nightly
+    # },
     'reconcile-missing-invoices': {
         'task': 'booking.tasks.reconcile_invoices',
         'schedule': crontab(minute='2-59/15'),      # :02, :17, :32, :47 — 2 min after each status sweep
