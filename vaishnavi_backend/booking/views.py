@@ -1,3 +1,5 @@
+from collections import Counter
+
 from venue_manager.models import Venue, Service, Resource
 from venue_manager.serializers import (
     VenueSerializer,
@@ -10,7 +12,7 @@ from datetime import date
 from rest_framework.exceptions import ValidationError
 
 from .utils import (
-    DateParser, SecondaryOrderHelper,MonthAvailabilityChecker
+    DateParser, SecondaryOrderHelper,MonthAvailabilityChecker,PaymentMappingService
 )
 from rest_framework import viewsets, permissions, status
 from .serializers import *
@@ -1414,10 +1416,16 @@ class TotalInvoiceViewSet(viewsets.ModelViewSet):
                     reference_id=str(invoice.id),
                     description=f'Payment for invoice {invoice.invoice_number}',
                 )
-                data = {**data, 'reference': txn.transaction_id, 'is_verified': True}
+                data = {
+                    **data,
+                    'reference': txn.transaction_id,
+                    'is_verified': True,
+                    'mapping_status':PaymentMappingStatus.AUTO_MAPPED
+                }
 
             payment = Payment.objects.create(
                 invoice=invoice,
+                
                 patient=invoice.patient,
                 **data
             )
@@ -1588,6 +1596,7 @@ class PaymentViewSet(viewsets.ModelViewSet):
 
         # Patient filters
         'patient': ['exact'],
+        'mapping_status': ['exact'],
 
         # Invoice filters
         'invoice__invoice_number': ['exact', 'icontains'],
@@ -1601,6 +1610,7 @@ class PaymentViewSet(viewsets.ModelViewSet):
         'reference',
         'method',
         'is_verified',
+        'mapping_status',
         ('patient__first_name', 'patient'),
         ('patient__phone', 'patient_phone_number'),
         ('invoice__invoice_number', 'invoice_number'),
@@ -2018,6 +2028,44 @@ class PaymentViewSet(viewsets.ModelViewSet):
             status=status.HTTP_200_OK
         )
 
+    @action(detail=False,methods=["post"],url_path="auto-map")
+    def auto_map(self, request):
+        MAX_SYNC_BATCH = 200
+        payment_ids = request.data.get("payment_ids")
+        preview = bool(request.data.get("preview", False))
+
+        queryset = Payment.objects.filter(
+            invoice__isnull=True,
+            mapping_status__in=["UNMAPPED", "REVIEW"],
+        )
+        if payment_ids:
+            queryset = queryset.filter(id__in=payment_ids)
+
+        total = queryset.count()
+        if not preview and not payment_ids and total > MAX_SYNC_BATCH:
+            return Response(
+                {
+                    "error": (
+                        f"{total} payments match — that's over the {MAX_SYNC_BATCH} "
+                        "sync limit. Run the auto_map_unmapped_payments celery task "
+                        "for a full batch, or pass payment_ids / preview=true here."
+                    )
+                },
+                status=400,
+            )
+
+        results = [PaymentMappingService(payment).run(dry_run=preview) for payment in queryset]
+        summary = Counter(r["status"] for r in results)
+
+        return Response(
+            {
+                "preview": preview,
+                "processed": len(results),
+                "summary": dict(summary),
+                "results": results,
+            }
+        )
+    
 class PatientMonthAvailabilityView(APIView):
     """
     Returns a day-by-day availability calendar for a patient (all services)

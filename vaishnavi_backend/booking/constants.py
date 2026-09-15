@@ -88,6 +88,12 @@ class PaymentMethod(models.TextChoices):
     WALLET = 'WALLET', 'Wallet'
     WALLET_REFUND = 'WALLET_REFUND', 'Wallet Refund'
 
+class PaymentMappingStatus(models.TextChoices):   
+    AUTO_MAPPED = 'AUTO_MAPPED', 'Auto Mapped'
+    UNMAPPED = 'UNMAPPED', 'Unmapped'
+    REVIEW = 'REVIEW', 'Review Required'
+    MANUAL = 'MANUAL', 'Manually Mapped'
+    
 RAZORPAY_CLIENT = razorpay.Client(
         auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET)
     )

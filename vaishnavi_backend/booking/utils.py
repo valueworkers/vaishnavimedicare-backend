@@ -1,16 +1,17 @@
 from __future__ import annotations
 
+import re
+import calendar
 from datetime import date, time, datetime,timedelta
+from typing import Optional
+from decimal import Decimal
 from django.core.exceptions import ValidationError
 from django.utils import timezone
-from django.db.models import Prefetch, QuerySet
+from django.db.models import Prefetch, QuerySet, Q
+from django.db import transaction
 
 from .constants import BookingStatus,PeriodChoices
-from .models import PrimaryOrder, SecondaryOrder, TernaryOrder 
-
-import calendar
-from typing import Optional
-
+from .models import PrimaryOrder, SecondaryOrder, TernaryOrder,Payment, TotalInvoice
 
 
 class DateParser:
@@ -101,7 +102,6 @@ class DateParser:
             raise ValueError(f"Unsupported period type: {period_type}")
         
         return start_dt, end_dt
-
 
 class OrderQuerySet(QuerySet):
     """Custom QuerySet for PrimaryOrder to reduce duplication."""
@@ -227,8 +227,6 @@ class SecondaryOrderHelper:
             # Primary change (non-cancel) → cascade to all children
             SecondaryOrder.objects.filter(id__in=secondary_ids).update(status=new_status)
             TernaryOrder.objects.filter(secondary_order_id__in=secondary_ids).update(status=new_status)
-
-# ── Checker ──────────────────────────────────────────────────────────────────
 
 class MonthAvailabilityChecker:
     """
@@ -373,3 +371,295 @@ class MonthAvailabilityChecker:
             qs = qs.exclude(primary_order_id=self.exclude_order_id)
 
         return qs
+
+class PaymentMappingService:
+
+    AUTO_MAP_THRESHOLD = Decimal("90.00")
+    REVIEW_THRESHOLD = Decimal("65.00")
+    AMBIGUITY_MARGIN = Decimal("10.00")
+
+    def __init__(self, payment):
+        self.payment = payment
+
+    # =========================================================
+    # PUBLIC
+    # =========================================================
+
+    def run(self, dry_run: bool = False):
+        """
+        Score candidates for one payment.
+
+        dry_run=True: never writes to the DB. Same result shape as a real
+        run, plus "dry_run": True, so the API can preview without committing.
+        """
+        if self.payment.invoice_id and self.payment.patient_id:
+            return {"status": "ALREADY_MAPPED", "payment_id": self.payment.id}
+
+        candidates = self._find_candidates()
+        scored = [r for r in (self._score_invoice(inv) for inv in candidates) if r["score"] > 0]
+
+        if not scored:
+            return self._finalize("UNMAPPED", dry_run)
+
+        scored.sort(key=lambda x: x["score"], reverse=True)
+        best = scored[0]
+
+        if (
+            best["score"] >= self.REVIEW_THRESHOLD
+            and best["score"] < 100
+            and len(scored) > 1
+            and (best["score"] - scored[1]["score"]) < self.AMBIGUITY_MARGIN
+        ):
+            return self._finalize("REVIEW", dry_run, best, scored)
+
+        if best["score"] >= self.AUTO_MAP_THRESHOLD:
+            return self._finalize("AUTO_MAPPED", dry_run, best, scored)
+
+        if best["score"] >= self.REVIEW_THRESHOLD:
+            return self._finalize("REVIEW", dry_run, best, scored)
+
+        return self._finalize("UNMAPPED", dry_run)
+
+    # =========================================================
+    # DISPATCH
+    # =========================================================
+
+    def _finalize(self, status, dry_run, best=None, scored=None):
+        if dry_run:
+            return self._preview_result(status, best, scored)
+        if status == "AUTO_MAPPED":
+            return self._auto_map(best)
+        if status == "REVIEW":
+            return self._mark_review(best, scored)
+        return self._mark_unmapped()
+
+    def _preview_result(self, status, best, scored):
+        result = {"status": status, "payment_id": self.payment.id, "dry_run": True}
+        if best:
+            result["invoice_id"] = best["invoice"].id
+            result["invoice_number"] = best["invoice"].invoice_number
+            result["patient_id"] = best["invoice"].patient_id
+            result["confidence"] = float(best["score"])
+            result["reason"] = best["reason"]
+        if scored:
+            result["other_candidates"] = [
+                {
+                    "invoice_id": x["invoice"].id,
+                    "invoice_number": x["invoice"].invoice_number,
+                    "score": float(x["score"]),
+                }
+                for x in scored[1:5]
+            ]
+        return result
+
+    # =========================================================
+    # CANDIDATES
+    # =========================================================
+
+    def _find_candidates(self):
+        payment = self.payment
+        payment_date = payment.paid_date.date()
+
+        filters = Q()
+        invoice_numbers = self._extract_invoice_numbers()
+        if invoice_numbers:
+            filters |= Q(invoice_number__in=invoice_numbers)
+
+        if payment.patient_id:
+            filters |= Q(patient_id=payment.patient_id)
+
+        # Amount and date only count together, not separately — otherwise
+        # any invoice sharing the exact rupee amount anywhere in the last/next
+        # 30 days becomes a full scoring candidate on every payment.
+        filters |= Q(
+            total_amount=payment.amount,
+            issued_date__range=(
+                payment_date - timedelta(days=30),
+                payment_date + timedelta(days=30),
+            ),
+        )
+
+        if not filters:
+            return TotalInvoice.objects.none()
+
+        return (
+            TotalInvoice.objects.filter(filters)
+            .exclude(remaining_amount__lte=0)  # fully paid invoices aren't valid targets
+            .select_related("patient")
+            .distinct()
+        )
+
+    def _extract_invoice_numbers(self):
+        reference = self.payment.reference or ""
+        return [
+            value.upper()
+            for value in re.findall(r"\b[ST]INV\d{1,12}\b", reference, flags=re.IGNORECASE)
+        ]
+
+    # =========================================================
+    # SCORING (unchanged from your version)
+    # =========================================================
+
+    def _score_invoice(self, invoice):
+        payment = self.payment
+        score = Decimal("0.00")
+        reasons = {}
+
+        if self._reference_contains_invoice(payment.reference, invoice.invoice_number):
+            score += Decimal("50.00")
+            reasons["reference_invoice_match"] = True
+        else:
+            reasons["reference_invoice_match"] = False
+
+        if payment.patient_id:
+            patient_match = payment.patient_id == invoice.patient_id
+        else:
+            patient_match = self._patient_from_reference(payment.reference, invoice.patient)
+
+        if patient_match:
+            score += Decimal("25.00")
+        reasons["patient_match"] = patient_match
+
+        amount_match = payment.amount == invoice.total_amount
+        if amount_match:
+            score += Decimal("20.00")
+        reasons["amount_match"] = amount_match
+
+        date_difference = abs((payment.paid_date.date() - invoice.issued_date).days)
+        if date_difference == 0:
+            score += Decimal("5.00")
+            reasons["date_match"] = "EXACT"
+        elif date_difference <= 3:
+            score += Decimal("3.00")
+            reasons["date_match"] = "WITHIN_3_DAYS"
+        elif date_difference <= 7:
+            score += Decimal("1.00")
+            reasons["date_match"] = "WITHIN_7_DAYS"
+        else:
+            reasons["date_match"] = "OUTSIDE_7_DAYS"
+
+        if invoice.remaining_amount >= payment.amount:
+            score += Decimal("5.00")
+            reasons["amount_fits_remaining"] = True
+        else:
+            reasons["amount_fits_remaining"] = False
+
+        return {"invoice": invoice, "score": min(score, Decimal("100.00")), "reason": reasons}
+
+    # =========================================================
+    # AUTO MAP
+    # =========================================================
+
+    @transaction.atomic
+    def _auto_map(self, result):
+        payment = Payment.objects.select_for_update().select_related("invoice").get(pk=self.payment.pk)
+
+        if payment.invoice_id:
+            return {"status": "ALREADY_MAPPED", "payment_id": payment.id, "invoice_id": payment.invoice_id}
+
+        invoice = TotalInvoice.objects.select_for_update().get(pk=result["invoice"].pk)
+        patient = invoice.patient
+
+        payment.invoice = invoice
+        payment.patient = patient
+        payment.mapping_status = "AUTO_MAPPED"
+        payment.mapping_meta = {
+            "source": self._get_source(result["reason"]),
+            "confidence": float(result["score"]),
+            "reason": result["reason"],
+        }
+        payment.save(update_fields=["invoice", "patient", "mapping_status", "mapping_meta", "updated_at"])
+
+        invoice.recalculate_payments()
+
+        return {
+            "status": "AUTO_MAPPED",
+            "payment_id": payment.id,
+            "invoice_id": invoice.id,
+            "patient_id": patient.id,
+            "confidence": float(result["score"]),
+            "reason": result["reason"],
+        }
+
+    # =========================================================
+    # REVIEW
+    # =========================================================
+
+    def _mark_review(self, best, candidates):
+        mapping_reason = {
+            "best_candidate": {
+                "invoice_id": best["invoice"].id,
+                "invoice_number": best["invoice"].invoice_number,
+                "score": float(best["score"]),
+                "reason": best["reason"],
+            },
+            "other_candidates": [
+                {
+                    "invoice_id": x["invoice"].id,
+                    "invoice_number": x["invoice"].invoice_number,
+                    "score": float(x["score"]),
+                    "reason": x["reason"],
+                }
+                for x in candidates[1:5]
+            ],
+        }
+
+        self.payment.mapping_status = "REVIEW"
+        self.payment.mapping_meta = mapping_reason
+        self.payment.save(update_fields=["mapping_status", "mapping_meta", "updated_at"])
+
+        return {
+            "status": "REVIEW",
+            "payment_id": self.payment.id,
+            "source": self._get_source(best["reason"]),
+            "confidence": float(best["score"]),
+            "reason": mapping_reason,
+        }
+
+    # =========================================================
+    # UNMAPPED
+    # =========================================================
+
+    def _mark_unmapped(self):
+        self.payment.mapping_status = "UNMAPPED"
+        self.payment.save(update_fields=["mapping_status", "updated_at"])
+        return {"status": "UNMAPPED", "payment_id": self.payment.id}
+
+    # =========================================================
+    # HELPERS (unchanged)
+    # =========================================================
+
+    @staticmethod
+    def _normalize(value):
+        if not value:
+            return ""
+        return re.sub(r"[^A-Z0-9]", "", value.upper())
+
+    def _reference_contains_invoice(self, reference, invoice_number):
+        ref = self._normalize(reference)
+        inv = self._normalize(invoice_number)
+        return bool(ref and inv and inv in ref)
+
+    def _patient_from_reference(self, reference, patient):
+        if not reference or not patient:
+            return False
+        normalized_reference = self._normalize(reference)
+
+        if patient.patient_id and self._normalize(patient.patient_id) in normalized_reference:
+            return True
+        if patient.phone and patient.phone in normalized_reference:
+            return True
+        full_name = self._normalize(f"{patient.first_name}{patient.last_name}")
+        if full_name and full_name in normalized_reference:
+            return True
+        return False
+
+    @staticmethod
+    def _get_source(reason):
+        if reason.get("reference_invoice_match"):
+            return "REFERENCE_INVOICE"
+        if reason.get("patient_match") and reason.get("amount_match"):
+            return "PATIENT_AMOUNT"
+        if reason.get("amount_match"):
+            return "AMOUNT_DATE"
+        return "AUTO"

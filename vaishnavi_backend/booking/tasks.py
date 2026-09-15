@@ -1,10 +1,12 @@
 from celery import shared_task
-from .models import PrimaryOrder, SecondaryOrder, TernaryOrder,TotalInvoice,bulk_update_status,sync_patient_active_status
+from .models import PrimaryOrder, SecondaryOrder, TernaryOrder,TotalInvoice,Payment,bulk_update_status,sync_patient_active_status
 from .constants import BookingStatus
 from django.utils import timezone
 from datetime import timedelta
 import logging
 from django.db import transaction
+
+from .utils import PaymentMappingService
 
 
 logger = logging.getLogger(__name__)
@@ -41,7 +43,6 @@ def generate_missing_secondary_invoices(self):
 
     return {"created": created, "failed": failed}
 
-
 @shared_task(bind=True, max_retries=3, default_retry_delay=60)
 def generate_missing_ternary_invoices(self):
     qs = (
@@ -62,7 +63,6 @@ def generate_missing_ternary_invoices(self):
 
     return {"created": created, "failed": failed}
 
-
 @shared_task
 def reconcile_invoices():
     """Umbrella task — schedule this one via beat."""
@@ -79,7 +79,6 @@ def update_statuses_by_time():
         "ternary_updated":   bulk_update_status(TernaryOrder.objects.all(),   TernaryOrder),
         "patient_sync":      sync_patient_active_status()
     }
-
 
 @shared_task
 def trigger_auto_continue_secondary_orders():
@@ -129,3 +128,55 @@ def trigger_auto_continue_secondary_orders():
         created_count, failed_count, expiring_orders.count(),
     )
     return {"created": created_count, "failed": failed_count}
+
+
+# @shared_task
+# def auto_map_unmapped_payments():
+
+#     payments = (
+#         Payment.objects
+#         .filter(
+#             invoice__isnull=True,
+#             mapping_status__in=[
+#                 "UNMAPPED",
+#                 "REVIEW",
+#             ],
+#         )
+#         .order_by("id")
+#     )
+
+#     results = {
+#         "processed": 0,
+#         "auto_mapped": 0,
+#         "review": 0,
+#         "unmapped": 0,
+#         "errors": 0,
+#     }
+
+#     for payment in payments.iterator(
+#         chunk_size=100
+#     ):
+
+#         results["processed"] += 1
+
+#         try:
+            
+#             result = PaymentMappingService(
+#                 payment
+#             ).run()
+
+#             status = result["status"]
+
+#             if status == "AUTO_MAPPED":
+#                 results["auto_mapped"] += 1
+
+#             elif status == "REVIEW":
+#                 results["review"] += 1
+
+#             elif status == "UNMAPPED":
+#                 results["unmapped"] += 1
+
+#         except Exception:
+#             results["errors"] += 1
+
+#     return results

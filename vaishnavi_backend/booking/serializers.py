@@ -586,6 +586,7 @@ class PaymentCreateSerializer(serializers.ModelSerializer):
             'method',
             'reference',
             'paid_date',
+            'mapping_status',
             'is_verified',
         ]
 
