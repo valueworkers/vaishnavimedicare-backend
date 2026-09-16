@@ -126,10 +126,10 @@ class CustomUserManager(BaseUserManager):
             "all_staff": self.get_staff_under_owner(owner),
         }
 
-# ------------------------USER MODEL---------------------------------
+# ------------------------CUSTOM USER-------------------------------
 class CustomUser(AbstractBaseUser, PermissionsMixin):
-    """Core user model supporting multiple user_types and hierarchy."""
-
+    """Identity, contact details and role. No employment fields."""
+ 
     class UserTypes(models.TextChoices):
         MASTER_ADMIN = "MASTER_ADMIN", "Master Admin"
         VSRE_OWNER = "VSRE_OWNER", "VSRE Owner"
@@ -137,7 +137,161 @@ class CustomUser(AbstractBaseUser, PermissionsMixin):
         LINE_MANAGER = "LINE_MANAGER", "Line Manager"
         VSRE_STAFF = "VSRE_STAFF", "VSRE Staff"
         CUSTOMER = "CUSTOMER", "Customer"
-
+ 
+    GENDER_CHOICES = [
+        ("M", "Male"),
+        ("F", "Female"),
+        ("O", "Other"),
+        ("N", "Prefer not to say"),
+    ]
+ 
+    phone_regex = RegexValidator(
+        regex=r"^\d{10}$", message="Phone number must be 10 digits"
+    )
+ 
+    profile_pic = models.ImageField(upload_to="profile_photos/", null=True, blank=True)
+    email = models.EmailField(unique=True, null=True, blank=True)
+    mobile_number = models.CharField(
+        max_length=10, unique=True, validators=[phone_regex]
+    )
+    alternate_phone_number = models.CharField(
+        max_length=10, blank=True, null=True, validators=[phone_regex]
+    )
+    emergency_contact_name = models.CharField(max_length=100, blank=True, null=True)
+    emergency_contact_number = models.CharField(
+        max_length=15, blank=True, null=True, validators=[phone_regex]
+    )
+ 
+    first_name = models.CharField(max_length=30, verbose_name="Emp First Name")
+    middle_name = models.CharField(max_length=30, blank=True, null=True)
+    last_name = models.CharField(max_length=30, verbose_name="Emp Last Name")
+ 
+    age = models.PositiveIntegerField(blank=True, null=True)
+    gender = models.CharField(max_length=1, choices=GENDER_CHOICES)
+ 
+    user_type = models.CharField(
+        max_length=30, choices=UserTypes.choices, verbose_name="Emp Role"
+    )
+    # Kept for backward compatibility with existing callers; new records
+    # should use EmployeeProfile.permanent_address / current_address.
+    address = models.TextField()
+    city = models.CharField(max_length=100, db_index=True)
+ 
+    is_active = models.BooleanField(default=True)
+    is_staff = models.BooleanField(default=False)
+    is_deleted = models.BooleanField(default=False)
+ 
+    # Account/onboarding date — applies to every user_type (owner, employee,
+    # customer). Distinct from EmployeeProfile.date_joined, which is the
+    # employment start date and only exists for managers/staff.
+    date_joined = models.DateField(blank=True, null=True)
+ 
+    created_by = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_users",
+    )
+ 
+    objects = CustomUserManager()
+ 
+    USERNAME_FIELD = "email"
+    REQUIRED_FIELDS = ["first_name", "last_name", "mobile_number"]
+ 
+    class Meta:
+        ordering = ["id"]
+        indexes = [
+            models.Index(fields=["user_type", "is_deleted"]),
+        ]
+ 
+    # ---------------- role helpers ----------------
+    @property
+    def is_owner(self):
+        return self.user_type in [self.UserTypes.VSRE_OWNER, self.UserTypes.MASTER_ADMIN]
+ 
+    @property
+    def is_manager(self):
+        return self.user_type in [
+            self.UserTypes.VSRE_MANAGER,
+            self.UserTypes.LINE_MANAGER,
+        ]
+ 
+    @property
+    def is_vsre_staff(self):
+        return self.user_type == self.UserTypes.VSRE_STAFF
+ 
+    @property
+    def is_customer(self):
+        return self.user_type == self.UserTypes.CUSTOMER
+ 
+    @property
+    def is_employee(self):
+        return self.is_manager or self.is_vsre_staff
+ 
+    # ---------------- convenience ----------------
+    @property
+    def employee_id(self):
+        """Kept so existing callers/templates don't break after the split."""
+        profile = getattr(self, "employee_profile", None)
+        return profile.employee_id if profile else None
+ 
+    def get_full_name(self):
+        return f"{self.first_name} {self.last_name}"
+ 
+    def soft_delete(self):
+        self.is_active = False
+        self.is_deleted = True
+        self.save(update_fields=["is_active", "is_deleted"])
+ 
+    def __str__(self):
+        return f"{self.first_name} {self.last_name} ({self.user_type})"
+ 
+# ------------------------SHIFT SCHEDULE-----------------------------
+class ShiftSchedule(models.Model):
+    """
+    A reusable duty-timing template (e.g. "Morning", "Night") that
+    employees are assigned to. Kept separate from EmployeeProfile so
+    the same shift can be shared across many employees and changed
+    in one place.
+    """
+ 
+    class WeekDay(models.IntegerChoices):
+        MONDAY = 0, "Monday"
+        TUESDAY = 1, "Tuesday"
+        WEDNESDAY = 2, "Wednesday"
+        THURSDAY = 3, "Thursday"
+        FRIDAY = 4, "Friday"
+        SATURDAY = 5, "Saturday"
+        SUNDAY = 6, "Sunday"
+ 
+    name = models.CharField(max_length=50, unique=True)  # e.g. "Morning", "Night"
+    start_time = models.TimeField()
+    end_time = models.TimeField()
+    # True when end_time is on the following calendar day (e.g. 22:00 -> 06:00)
+    is_overnight = models.BooleanField(default=False)
+    grace_minutes = models.PositiveSmallIntegerField(default=0)
+    weekly_off_days = models.JSONField(
+        default=list, blank=True, help_text="List of WeekDay values, e.g. [5, 6]"
+    )
+    is_active = models.BooleanField(default=True)
+ 
+    class Meta:
+        ordering = ["start_time"]
+ 
+    def clean(self):
+        if not self.is_overnight and self.end_time <= self.start_time:
+            raise ValidationError(
+                {"end_time": "End time must be after start time, or mark the shift as overnight."}
+            )
+ 
+    def __str__(self):
+        return f"{self.name} ({self.start_time:%H:%M}–{self.end_time:%H:%M})"
+ 
+# ------------------------EMPLOYEE PROFILE-----------------------------
+class EmployeeProfile(models.Model):
+    """Employment record for managers and staff."""
+ 
     class EmployeeCategory(models.TextChoices):
         REGULAR = "REGULAR", "Regular"
         FULLTIME = "FULLTIME", "Fulltime"
@@ -145,90 +299,138 @@ class CustomUser(AbstractBaseUser, PermissionsMixin):
         VIRTUAL = "VIRTUAL", "Virtual"
         PPO = "PPO", "PPO"
         VENDOR = "VENDOR", "Vendor"
-    
-
-    GENDER_CHOICES = [
-        ("M", "Male"),
-        ("F", "Female"),
-        ("O", "Other"),
-        ("N", "Prefer not to say"),
-    ]
-    phone_regex = RegexValidator(
-        regex=r'^\d{10}$',
-        message="Phone number must be 10 digits"
+ 
+    class Status(models.TextChoices):
+        ACTIVE = "ACTIVE", "Active"
+        INACTIVE = "INACTIVE", "Inactive"
+        TERMINATED = "TERMINATED", "Terminated"
+ 
+    class RehiredStatus(models.TextChoices):
+        YES = "YES", "Yes"
+        NO = "NO", "No"
+ 
+    uan_regex = RegexValidator(
+        regex=r"^\d{12}$", message="UAN must be exactly 12 digits."
     )
-    profile_pic = models.ImageField(upload_to="profile_photos/",null=True,blank=True,)
+    esi_regex = RegexValidator(
+        regex=r"^\d{10,17}$", message="ESI number must be 10 to 17 digits."
+    )
+ 
+    user = models.OneToOneField(
+        CustomUser,
+        on_delete=models.CASCADE,
+        related_name="employee_profile",
+    )
+ 
     employee_id = models.CharField(max_length=20, unique=True, blank=True, null=True)
-    email = models.EmailField(unique=True, null=True, blank=True)
-    mobile_number = models.CharField(max_length=10, unique=True, validators=[phone_regex])
-    emergency_contact = models.CharField(max_length=15, blank=True, null=True)
-
-    first_name = models.CharField(max_length=30)
-    middle_name = models.CharField(max_length=30, blank=True, null=True)
-    last_name = models.CharField(max_length=30)
-
-    gender = models.CharField(max_length=1, choices=GENDER_CHOICES)
     category = models.CharField(
-        max_length=50, choices=EmployeeCategory, null=True, blank=True
+        max_length=50, choices=EmployeeCategory.choices, null=True, blank=True
     )
-    user_type = models.CharField(max_length=30, choices=UserTypes.choices)
-    address = models.TextField()
-    city = models.CharField(max_length=100, db_index=True)  # Base/preferred location
-
-    is_active = models.BooleanField(default=True)
-    is_staff = models.BooleanField(default=False)
-    is_deleted = models.BooleanField(default=False)
-    date_joined = models.DateField(blank=True, null=True)
-    last_working_day = models.DateField(blank=True, null=True)
+    designation = models.CharField(
+        max_length=100, blank=True, null=True, help_text="Job title, e.g. 'Senior Technician'."
+    )
+    status = models.CharField(
+        max_length=20, choices=Status.choices, default=Status.ACTIVE
+    )
+    grade = models.CharField(max_length=20, blank=True, null=True)
+    cost_center = models.CharField(max_length=50, blank=True, null=True)
+    department = models.CharField(
+        max_length=50, blank=True, null=True,
+        help_text="Employee's HR department. Distinct from UserHierarchy.department, "
+                   "which reflects org reporting structure.",
+    )
+    permanent_address = models.TextField(blank=True, null=True)
+    current_address = models.TextField(blank=True, null=True)
+    rehired_status = models.CharField(
+        max_length=3, choices=RehiredStatus.choices, default=RehiredStatus.NO
+    )
+ 
+    # vendor-sourced employees only
+    vendor_name = models.CharField(max_length=120, blank=True, null=True)
+    vendor_phone = models.CharField(max_length=15, blank=True, null=True)
+ 
+    date_joined = models.DateField(blank=True, null=True, verbose_name="DOJ")
+    last_working_day = models.DateField(blank=True, null=True, verbose_name="LWD")
+ 
     order_types = models.JSONField(blank=True, null=True)
     skills = models.JSONField(blank=True, null=True)
     target_percent = models.FloatField(blank=True, null=True)
     qc_required = models.BooleanField(default=False)
-    created_by = models.ForeignKey("self",on_delete=models.SET_NULL,null=True,blank=True,related_name="created_users")
-    objects = CustomUserManager()
-
-    USERNAME_FIELD = "email"
-    REQUIRED_FIELDS = ["first_name", "last_name", "mobile_number"]
+ 
+    # ---------------- statutory: Provident Fund ----------------
+    pf_applicable = models.BooleanField(default=False)
+    pf_number = models.CharField(max_length=30, blank=True, null=True)
+    uan_number = models.CharField(
+        max_length=12, blank=True, null=True, validators=[uan_regex],
+        help_text="12-digit Universal Account Number",
+    )
+ 
+    # ---------------- statutory: Employee State Insurance ----------------
+    esi_applicable = models.BooleanField(default=False)
+    esi_number = models.CharField(
+        max_length=17, blank=True, null=True, validators=[esi_regex]
+    )
+    esi_dispensary = models.CharField(max_length=120, blank=True, null=True)
+ 
+    # ---------------- duty timing / shift ----------------
+    shift = models.ForeignKey(
+        ShiftSchedule,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="employees",
+    )
+    shift_effective_from = models.DateField(
+        blank=True, null=True, help_text="Date this employee started on `shift`."
+    )
+ 
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+ 
     class Meta:
-        ordering = ["id"]
+        ordering = ["user_id"]
+        indexes = [
+            models.Index(fields=["category"]),
+            models.Index(fields=["employee_id"]),
+            models.Index(fields=["pf_number"]),
+            models.Index(fields=["esi_number"]),
+        ]
+ 
+    def clean(self):
+        if self.category != self.EmployeeCategory.VENDOR and (
+            self.vendor_name or self.vendor_phone
+        ):
+            raise ValidationError(
+                {"vendor_name": "Vendor details apply only to the VENDOR category."}
+            )
+        if self.pf_applicable and not (self.pf_number or self.uan_number):
+            raise ValidationError(
+                {"pf_number": "PF number or UAN is required when PF is applicable."}
+            )
+        if self.esi_applicable and not self.esi_number:
+            raise ValidationError(
+                {"esi_number": "ESI number is required when ESI is applicable."}
+            )
+        if self.status == self.Status.TERMINATED and not self.last_working_day:
+            raise ValidationError(
+                {"last_working_day": "LWD is required when status is Terminated."}
+            )
+        if (
+            self.date_joined
+            and self.last_working_day
+            and self.last_working_day < self.date_joined
+        ):
+            raise ValidationError(
+                {"last_working_day": "Last working day cannot precede the joining date."}
+            )
+ 
     @property
-    def is_owner(self):
-        return self.user_type in [self.UserTypes.VSRE_OWNER, self.UserTypes.MASTER_ADMIN]
-    
-    @property
-    def is_manager(self):
-        return self.user_type in [self.UserTypes.VSRE_MANAGER, self.UserTypes.LINE_MANAGER]
-    
-    @property
-    def is_vsre_staff(self):
-        return self.user_type in [self.UserTypes.VSRE_STAFF]
-    
-    @property
-    def is_customer(self):
-        return self.user_type in [self.UserTypes.CUSTOMER]
-    
-    def get_full_name(self):
-        return f"{self.first_name} {self.last_name}"
-    
-    def soft_delete(self):
-        self.is_active = False
-        self.is_deleted = True
-        self.save()
-   
-    def can_manage_entity(self, entity):
-        """Check if user has permission to manage specific entity"""
-        if self.is_superuser:
-            return entity.all == self
-        if self.is_owner:
-            return entity.owner == self
-        elif self.is_manager:
-            return entity.manager == self
-        else:  # staff
-            return entity.is_vsre_staff == self
-    
+    def is_currently_employed(self):
+        return self.last_working_day is None
+ 
     def __str__(self):
-        return f"{self.first_name} {self.last_name} ({self.user_type})"
-
+        return f"{self.employee_id or self.user_id} — {self.user.get_full_name()}"
+    
 # ------------------------USER DOCUMENTS-----------------------------
 class UserDocument(models.Model):
     """

@@ -1,4 +1,4 @@
-# views.py
+ # views.py
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
 from django.contrib.auth.hashers import check_password 
@@ -8,8 +8,8 @@ from rest_framework.views import APIView
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated,AllowAny
-from rest_framework.exceptions import PermissionDenied
-from .permissions import IsVSREOwner,IsCreator,IsVSREOwnerOrManager,IsMasterAdmin
+from rest_framework.exceptions import PermissionDenied, ValidationError
+from .permissions import CanManageEmployees, IsOwner
 from .models import CustomUser, UserHierarchy, PricingModel, UserPlan,StaffForHire
 from .serializers import *
 from .utils import send_otp,PasswordResetOTP
@@ -20,8 +20,8 @@ class CustomerRegistrationView(generics.CreateAPIView):
     serializer_class = CustomerRegistrationSerializer
     permission_classes = [AllowAny]
 
-class VSREOwnerRegistrationView(generics.CreateAPIView):
-    serializer_class = VSREOwnerRegistrationSerializer
+class OwnerRegistrationView(generics.CreateAPIView):
+    serializer_class = OwnerRegistrationSerializer
     permission_classes = [AllowAny]
 
 # ---------------------- User Authentication ViewSet ----------------------
@@ -149,7 +149,6 @@ class VerifyOTPView(APIView):
 
         return Response({"reset_token": str(reset_token)}, status=status.HTTP_200_OK)
 
-
 class ResetPasswordView(APIView):
     """
     Step 3 — POST { reset_token, new_password, confirm_password }
@@ -191,13 +190,13 @@ class UserProfileView(APIView):
     def get_serializer_class(self, user):
         if user.is_owner:
             return OwnerSerializer
-        elif user.is_manager or user.is_vsre_staff:
+        if user.is_manager or user.is_vsre_staff:
             return EmployeeSerializer
         return CustomerSerializer
-    
+
     def get(self, request):
         serializer_class = self.get_serializer_class(request.user)
-        serializer = serializer_class(instance=request.user, context={'request': request})
+        serializer = serializer_class(instance=request.user, context={"request": request})
         return Response(serializer.data)
 
     def put(self, request):
@@ -206,112 +205,52 @@ class UserProfileView(APIView):
             instance=request.user,
             data=request.data,
             partial=True,
-            context={'request': request}
+            context={"request": request},
         )
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-# ---------------------- User management ViewSet -------------------------
-class OwnerViewSet(viewsets.ReadOnlyModelViewSet):
-    serializer_class = OwnerSerializer
-    
-    permission_classes = [IsAuthenticated]
-    filterset_fields = ["is_active", "city"]
-    search_fields = ["email", "first_name", "last_name", "mobile_number"]
-
-
-    def get_queryset(self):
-        """Fetch all VSRE Owners."""
-        request_user = self.request.user
-        queryset = CustomUser.objects.owners()
-        
-        if request_user.is_superuser:
-            return queryset
-        
-        if request_user.is_owner:
-            return queryset.filter(hierarchy__owner=request_user)
-
-    def get_serializer_context(self):
-        context = super().get_serializer_context()
-        context["request"] = self.request
-        return context
-    
-    def perform_create(self, serializer):
-        # create user first
-        user = serializer.save(
-            user_type=CustomUser.UserTypes.VSRE_OWNER,
-            
-        )
-        return user
-    
-    def list(self, request, *args, **kwargs):
-        owners = self.filter_queryset(self.get_queryset())
-
-        # Use CustomUserManager methods for counts
-        data = []
-        for owner in owners:
-            managers = CustomUser.objects.get_all_managers_under_owner(owner)
-            staff = CustomUser.objects.get_staff_under_owner(owner)
-
-            data.append({
-                "id": owner.id,
-                "first_name": owner.first_name,
-                "last_name": owner.last_name,
-                "email": owner.email,
-                "mobile_number": owner.mobile_number,
-                "city": owner.city,
-                "manager_count": managers.count(),
-                "staff_count": staff.count(),
-            })
-
-        page = self.paginate_queryset(data)
-        if page is not None:
-            return self.get_paginated_response(page)
-
-        return Response(data)
-
-    # ----------------------------------------------------------------------
-    # RETRIEVE: Detailed hierarchy of a specific owner
-    # ----------------------------------------------------------------------
-    def retrieve(self, request, *args, **kwargs):
-        owner = self.get_object()
-
-        # Use manager’s hierarchy helper
-        hierarchy = CustomUser.objects.get_entire_hierarchy_under_owner(owner)
-
-        managers = hierarchy["all_managers"]
-        staff = hierarchy["all_staff"]
-
-        data = OwnerSerializer(owner).data
-        data.update({
-            "manager_count": managers.count(),
-            "staff_count": staff.count(),
-            "managers": [
-                {
-                    "id": m.id,
-                    "name": f"{m.first_name} {m.last_name}".strip(),
-                    "email": m.email,
-                    "staff_count": CustomUser.objects.get_staff_under_manager(m).count(),
-                }
-                for m in managers
-            ],
-        })
-
-        return Response(data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
 
 class EmployeeViewSet(viewsets.ModelViewSet):
-    permission_classes = [IsAuthenticated, IsCreator, IsVSREOwner]
-    filterset_fields = ["is_active", "city", "category", "user_type"]
-    search_fields = [
-        "first_name", "middle_name", "last_name", "employee_id",
-        "mobile_number", "email", "emergency_contact", "category", "skills",
-    ]
+    """
+    - Owner   -> full CRUD on every employee in their hierarchy
+    - Manager -> CRUD on the staff reporting directly to them
+    """
 
+    permission_classes = [IsAuthenticated, CanManageEmployees]
+
+    filterset_fields = {
+        "is_active": ["exact"],
+        "city": ["exact", "icontains"],
+        "user_type": ["exact", "in"],
+        "employee_profile__category": ["exact", "in"],
+        "employee_profile__date_joined": ["gte", "lte"],
+    }
+    search_fields = [
+        "first_name",
+        "middle_name",
+        "last_name",
+        "mobile_number",
+        "email",
+        "emergency_contact",
+        "employee_profile__employee_id",
+        "employee_profile__category",
+        "employee_profile__skills",
+    ]
+    ordering_fields = ["id", "first_name", "last_name", "employee_profile__date_joined"]
+    ordering = ["id"]
+
+    MANAGER_TYPES = [CustomUser.UserTypes.VSRE_MANAGER, CustomUser.UserTypes.LINE_MANAGER]
+    STAFF_TYPES = [CustomUser.UserTypes.VSRE_STAFF]
+
+    # ---------------- queryset ----------------
     def get_queryset(self):
         user = self.request.user
-        qs = CustomUser.objects.employees()
+        qs = (
+            CustomUser.objects.employees()
+            .filter(is_deleted=False)
+            .select_related("employee_profile", "hierarchy", "hierarchy__parent")
+        )
 
         if user.is_superuser:
             return qs
@@ -324,6 +263,7 @@ class EmployeeViewSet(viewsets.ModelViewSet):
             )
         return qs.none()
 
+    # ---------------- serializers ----------------
     def get_serializer_class(self):
         return EmployeeListSerializer if self.action == "list" else EmployeeSerializer
 
@@ -332,24 +272,33 @@ class EmployeeViewSet(viewsets.ModelViewSet):
         context["request"] = self.request
         return context
 
+    # ---------------- create ----------------
+    def _allowed_create_types(self):
+        user = self.request.user
+        if user.is_superuser or user.is_owner:
+            return self.MANAGER_TYPES + self.STAFF_TYPES
+        return list(self.STAFF_TYPES)
+
     def perform_create(self, serializer):
         request_user = self.request.user
         user_type = self.request.data.get("user_type")
 
-        allowed_types = {
+        if user_type not in {
             CustomUser.UserTypes.VSRE_MANAGER,
             CustomUser.UserTypes.LINE_MANAGER,
             CustomUser.UserTypes.VSRE_STAFF,
-        }
-        if user_type not in allowed_types:
-            raise serializers.ValidationError(
+        }:
+            raise ValidationError(
                 {"user_type": "Must be one of VSRE_MANAGER, LINE_MANAGER, VSRE_STAFF."}
             )
-        if user_type in {CustomUser.UserTypes.VSRE_MANAGER, CustomUser.UserTypes.LINE_MANAGER} \
-                and not request_user.is_owner:
-            raise PermissionDenied("Only an owner can create manager-level employees.")
+        if user_type not in self._allowed_create_types():
+            raise PermissionDenied(f"You are not allowed to create a {user_type}.")
 
         serializer.save(user_type=user_type, created_by=request_user)
+
+    def perform_update(self, serializer):
+        # user_type is read-only on the serializer, so it cannot be escalated here
+        serializer.save()
 
     def perform_destroy(self, instance):
         if hasattr(instance, "soft_delete"):
@@ -359,14 +308,17 @@ class EmployeeViewSet(viewsets.ModelViewSet):
 
 class CustomerViewSet(viewsets.ModelViewSet):
     """
-    list:   GET  /customers/
-    create: POST /customers/
+    list:   GET    /customers/
+    create: POST   /customers/
     retrieve: GET  /customers/<id>/
-    update: PUT  /customers/<id>/
+    update: PUT    /customers/<id>/
     partial_update: PATCH /customers/<id>/
     destroy: DELETE /customers/<id>/
     """
-    search_fields= [
+
+    permission_classes = [IsAuthenticated, IsOwner]
+
+    search_fields = [
         "first_name",
         "middle_name",
         "last_name",
@@ -374,15 +326,15 @@ class CustomerViewSet(viewsets.ModelViewSet):
         "mobile_number",
         "emergency_contact",
         "address",
-        "city"
+        "city",
     ]
     filterset_fields = {
-        "gender":["exact", "icontains"],
-        "address":["exact", "icontains"],
-        "city":["exact", "icontains"],
-        "date_joined":["gte", "lte", "exact"],
-        "is_active":["exact"],
-        "created_by":["exact"],
+        "gender": ["exact", "icontains"],
+        "address": ["exact", "icontains"],
+        "city": ["exact", "icontains"],
+        "date_joined": ["gte", "lte", "exact"],
+        "is_active": ["exact"],
+        "created_by": ["exact"],
     }
     ordering_fields = [
         "first_name",
@@ -394,17 +346,19 @@ class CustomerViewSet(viewsets.ModelViewSet):
         "address",
         "city",
         "gender",
-        "address",
-        "city",
         "date_joined",
         "is_active",
         "created_by",
-        ]
+    ]
     ordering = ["first_name"]
 
-    
-    serializer_class = CustomerSerializer
-    permission_classes = [IsAuthenticated, IsVSREOwner]
+    def get_serializer_class(self):
+        return CustomerListSerializer if self.action == "list" else CustomerSerializer
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context["request"] = self.request
+        return context
 
     def get_queryset(self):
         return CustomUser.objects.filter(
@@ -427,17 +381,12 @@ class CustomerViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(instance, data=request.data, partial=partial)
         serializer.is_valid(raise_exception=True)
         self.perform_update(serializer)
-        return Response(
-            {"message": "Customer updated successfully.", "data": serializer.data}
-        )
+        return Response({"message": "Customer updated successfully.", "data": serializer.data})
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
         instance.soft_delete()
-        return Response(
-            {"message": "Customer deleted successfully."},
-            status=status.HTTP_200_OK,
-        )
+        return Response({"message": "Customer deleted successfully."}, status=status.HTTP_200_OK)
 
 class ParentAssignmentView(APIView):
     """

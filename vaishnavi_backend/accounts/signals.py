@@ -3,8 +3,8 @@ from django.core.management import call_command
 from django.contrib.auth.models import Group
 from django.dispatch import receiver
 from django.utils import timezone
-from .models import CustomUser,UserHierarchy
-from django.db import transaction
+from .models import CustomUser, EmployeeProfile
+from django.db.models import Q
 
 
 # ---------------------------
@@ -42,18 +42,28 @@ def assign_group_to_user(sender, instance, created, **kwargs):
 # Auto generate Employee Id 
 # ---------------------------
 
-@receiver(post_save, sender=CustomUser)
+from django.db.models.signals import post_save
+from django.dispatch import receiver
+from django.utils import timezone
+
+from .models import EmployeeProfile
+
+
+@receiver(post_save, sender=EmployeeProfile)
 def generate_employee_id(sender, instance, created, **kwargs):
     """
-    Generate employee ID format:
+    Generate employee ID when EmployeeProfile is created.
 
-    M20250001
-    LM20250001
-    S20250001
+    Works for existing CustomUser records.
+    Does not overwrite an existing employee_id.
     """
 
-    # Prevent regeneration
-    if not created or instance.employee_id:
+    # Only generate on creation
+    if not created:
+        return
+
+    # Do not overwrite existing employee_id
+    if instance.employee_id:
         return
 
     prefix_map = {
@@ -62,16 +72,21 @@ def generate_employee_id(sender, instance, created, **kwargs):
         "VSRE_STAFF": "S",
     }
 
-    prefix = prefix_map.get(instance.user_type)
+    prefix = prefix_map.get(instance.user.user_type)
 
-    # Skip if invalid type
+    # Skip non-employee user types
     if not prefix:
         return
 
     year = timezone.now().year
 
-    with transaction.atomic():
-        instance.employee_id = f"{prefix}{year}{instance.id:04d}"
-        CustomUser.objects.filter(pk=instance.pk).update(
-            employee_id=instance.employee_id
-        )
+    employee_id = f"{prefix}{year}{instance.user_id:04d}"
+
+    # Use update to avoid triggering post_save again
+   
+    sender.objects.filter(
+        Q(employee_id__isnull=True) | Q(employee_id=""),
+        pk=instance.pk,
+    ).update(
+        employee_id=employee_id
+    )

@@ -6,7 +6,6 @@ app_name = 'venue_manager'
 
 router = routers.DefaultRouter()
 
-router.register(r'vsre-owner', OwnerViewSet, basename='vsre-owner')
 router.register(r'employees', EmployeeViewSet, basename='employees')
 router.register(r'customers', CustomerViewSet, basename='customers')
 router.register(r'user-documents', UserDocumentViewSet, basename='user-documents')
@@ -19,7 +18,7 @@ urlpatterns = router.urls
 
 urlpatterns += [
     path('register/customer/', CustomerRegistrationView.as_view()),
-    path('register/owner/', VSREOwnerRegistrationView.as_view()),
+    path('register/owner/', OwnerRegistrationView.as_view()),
     path('login/', LoginView.as_view()),
     path('logout/', LogoutView.as_view()),
     path('change-password/', ChangePasswordView.as_view()),

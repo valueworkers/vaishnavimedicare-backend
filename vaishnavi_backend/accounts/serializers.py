@@ -1,7 +1,18 @@
 from rest_framework import serializers
 from django.contrib.auth import authenticate
+from django.db import transaction
 from venue_manager.models import Venue,Service,Resource
-from .models import CustomUser, UserHierarchy, PricingModel, UserPlan,StaffForHire,UserDocument,UserDocumentFile
+from .models import (
+    CustomUser,
+    ShiftSchedule,
+    EmployeeProfile,
+    UserHierarchy,
+    PricingModel,
+    UserPlan,
+    StaffForHire,
+    UserDocument,
+    UserDocumentFile
+)
 from django.contrib.auth.password_validation import validate_password
 
 # ---------------------- Entity mini Serializer ----------------------
@@ -9,10 +20,12 @@ class VenueMiniSerializer(serializers.ModelSerializer):
     class Meta:
         model = Venue
         fields = ["id", "name", "is_active"]
+
 class ServiceMiniSerializer(serializers.ModelSerializer):
     class Meta:
         model = Service
         fields = ["id", "name", "is_active"]
+
 class ResourceMiniSerializer(serializers.ModelSerializer):
     class Meta:
         model = Resource
@@ -21,10 +34,11 @@ class ResourceMiniSerializer(serializers.ModelSerializer):
 # ---------------------- User Profile Serializer ----------------------
 class BaseUserSerializer(serializers.ModelSerializer):
     """Base serializer for all user types with shared profile fields."""
+ 
     email = serializers.EmailField(required=True)
     password = serializers.CharField(write_only=True, required=False)
     confirm_password = serializers.CharField(write_only=True, required=False)
-
+ 
     class Meta:
         model = CustomUser
         fields = [
@@ -35,8 +49,11 @@ class BaseUserSerializer(serializers.ModelSerializer):
             "last_name",
             "email",
             "mobile_number",
-            "emergency_contact",
+            "alternate_phone_number",
+            "emergency_contact_name",
+            "emergency_contact_number",
             "user_type",
+            "age",
             "gender",
             "address",
             "city",
@@ -45,79 +62,311 @@ class BaseUserSerializer(serializers.ModelSerializer):
             "is_deleted",
             "created_by",
             "password",
-            "confirm_password"
+            "confirm_password",
         ]
-        read_only_fields = ["id", "user_type","created_by",'last_working_day']
-
-    # ---------------------- Validation ----------------------
+        read_only_fields = ["id", "user_type", "created_by"]
+ 
+    # ---------------------- validation ----------------------
+    def validate_email(self, value):
+        if not value:
+            return value
+        qs = CustomUser.objects.filter(email__iexact=value)
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            raise serializers.ValidationError("A user with this email already exists.")
+        return value
+ 
+    def validate_mobile_number(self, value):
+        qs = CustomUser.objects.filter(mobile_number=value)
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            raise serializers.ValidationError(
+                "A user with this mobile number already exists."
+            )
+        return value
+ 
     def validate(self, data):
         password = data.get("password")
         confirm_password = data.get("confirm_password")
-
+ 
+        if self.instance is None and not password:
+            raise serializers.ValidationError({"password": "This field is required."})
+ 
         if password or confirm_password:
             if password != confirm_password:
-                raise serializers.ValidationError("Passwords do not match.")
+                raise serializers.ValidationError(
+                    {"confirm_password": "Passwords do not match."}
+                )
         return data
-
-# ---------------------- Create ----------------------
+ 
+    # ---------------------- hierarchy ----------------------
+    @staticmethod
+    def _resolve_hierarchy(creator):
+        """owner = top VSRE_OWNER of the tree, parent = whoever created the user."""
+        if creator is None or creator.is_superuser:
+            return None, None, 1
+        if creator.is_owner:
+            return creator, creator, 1
+ 
+        creator_hierarchy = getattr(creator, "hierarchy", None)
+        owner = getattr(creator_hierarchy, "owner", None)
+        parent_level = getattr(creator_hierarchy, "level", 0) or 0
+        return owner, creator, parent_level + 1
+ 
+    # ---------------------- create ----------------------
+    @transaction.atomic
     def create(self, validated_data):
         request = self.context["request"]
         creator = request.user if request.user.is_authenticated else None
-
-        # Remove unwanted fields
+ 
         password = validated_data.pop("password", None)
         validated_data.pop("confirm_password", None)
-
-        # Assign creator only for owner / manager
-        if creator and (creator.is_owner or creator.is_manager):
-            validated_data["created_by"] = creator
-        else:
-            validated_data["created_by"] = None
-
-        # Create user
+ 
+        validated_data["created_by"] = (
+            creator if creator and (creator.is_owner or creator.is_manager) else None
+        )
+ 
         user = CustomUser(**validated_data)
         if password:
             user.set_password(password)
+        else:
+            user.set_unusable_password()
         user.save()
-
-        # ====================================================
-        #  HIERARCHY CREATION (Owner / Manager / Staff only)
-        # ====================================================
-        if user.is_owner or user.is_manager or user.is_vsre_staff:
-
-            # Resolve owner safely
-            if creator and (creator.is_superuser or creator.is_owner or creator.is_manager):
-                owner = creator
-            elif creator:
-                owner = getattr(creator.hierarchy, "owner", None)
-            else:
-                owner = None
-
+ 
+        if user.is_owner or user.is_employee:
+            owner, parent, level = self._resolve_hierarchy(creator)
             UserHierarchy.objects.create(
-                user=user,
-                parent=owner,
-                owner=owner,
+                user=user, parent=parent, owner=owner, level=level
             )
-
+ 
         return user
-# ---------------------- Update ----------------------
+ 
+    # ---------------------- update ----------------------
+    @transaction.atomic
     def update(self, instance, validated_data):
-        request = self.context["request"]
         password = validated_data.pop("password", None)
         validated_data.pop("confirm_password", None)
-
-        # Normal updates
+ 
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
-
+ 
         if password:
             instance.set_password(password)
-
+ 
+        instance.save()
+        return instance
+ 
+ 
+    # ---------------------- validation ----------------------
+    def validate_email(self, value):
+        if not value:
+            return value
+        qs = CustomUser.objects.filter(email__iexact=value)
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            raise serializers.ValidationError("A user with this email already exists.")
+        return value
+ 
+    def validate_mobile_number(self, value):
+        qs = CustomUser.objects.filter(mobile_number=value)
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            raise serializers.ValidationError(
+                "A user with this mobile number already exists."
+            )
+        return value
+ 
+    def validate(self, data):
+        password = data.get("password")
+        confirm_password = data.get("confirm_password")
+ 
+        if self.instance is None and not password:
+            raise serializers.ValidationError({"password": "This field is required."})
+ 
+        if password or confirm_password:
+            if password != confirm_password:
+                raise serializers.ValidationError(
+                    {"confirm_password": "Passwords do not match."}
+                )
+        return data
+ 
+    # ---------------------- hierarchy ----------------------
+    @staticmethod
+    def _resolve_hierarchy(creator):
+        """owner = top VSRE_OWNER of the tree, parent = whoever created the user."""
+        if creator is None or creator.is_superuser:
+            return None, None, 1
+        if creator.is_owner:
+            return creator, creator, 1
+ 
+        creator_hierarchy = getattr(creator, "hierarchy", None)
+        owner = getattr(creator_hierarchy, "owner", None)
+        parent_level = getattr(creator_hierarchy, "level", 0) or 0
+        return owner, creator, parent_level + 1
+ 
+    # ---------------------- create ----------------------
+    @transaction.atomic
+    def create(self, validated_data):
+        request = self.context["request"]
+        creator = request.user if request.user.is_authenticated else None
+ 
+        password = validated_data.pop("password", None)
+        validated_data.pop("confirm_password", None)
+ 
+        validated_data["created_by"] = (
+            creator if creator and (creator.is_owner or creator.is_manager) else None
+        )
+ 
+        user = CustomUser(**validated_data)
+        if password:
+            user.set_password(password)
+        else:
+            user.set_unusable_password()
+        user.save()
+ 
+        if user.is_owner or user.is_employee:
+            owner, parent, level = self._resolve_hierarchy(creator)
+            UserHierarchy.objects.create(
+                user=user, parent=parent, owner=owner, level=level
+            )
+ 
+        return user
+ 
+    # ---------------------- update ----------------------
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        password = validated_data.pop("password", None)
+        validated_data.pop("confirm_password", None)
+ 
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+ 
+        if password:
+            instance.set_password(password)
+ 
         instance.save()
         return instance
 
-# ----------------------- User Minimul list serializers ---------------
+# ---------------------- Owner Serializer ----------------------
+class OwnerSerializer(BaseUserSerializer):
+    """Serializer for VSRE Owners."""
+    owned_venues = VenueMiniSerializer(many=True, read_only=True)
+    owned_services = ServiceMiniSerializer(many=True, read_only=True)
+    owned_resources = ResourceMiniSerializer(many=True, read_only=True)
+ 
+    class Meta(BaseUserSerializer.Meta):
+        fields = BaseUserSerializer.Meta.fields + [
+            "owned_venues",
+            "owned_services",
+            "owned_resources",
+        ]
+
+ # ---------------------- Shift Schedule Serializer ----------------------
+class ShiftScheduleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ShiftSchedule
+        fields = [
+            "id",
+            "name",
+            "start_time",
+            "end_time",
+            "is_overnight",
+            "grace_minutes",
+            "weekly_off_days",
+            "is_active",
+        ]
+ 
+    def validate(self, data):
+        is_overnight = data.get(
+            "is_overnight", getattr(self.instance, "is_overnight", False)
+        )
+        start = data.get("start_time", getattr(self.instance, "start_time", None))
+        end = data.get("end_time", getattr(self.instance, "end_time", None))
+        if not is_overnight and start and end and end <= start:
+            raise serializers.ValidationError(
+                {"end_time": "End time must be after start time, or mark the shift as overnight."}
+            )
+        return data
+ 
+# ----------------------- Employee Serializer ---------------
+class EmployeeProfileSerializer(serializers.ModelSerializer):
+    shift_detail = ShiftScheduleSerializer(source="shift", read_only=True)
+ 
+    class Meta:
+        model = EmployeeProfile
+        fields = [
+            "employee_id",
+            "category",
+            "designation",
+            "status",
+            "grade",
+            "cost_center",
+            "department",
+            "permanent_address",
+            "current_address",
+            "rehired_status",
+            "vendor_name",
+            "vendor_phone",
+            "date_joined",
+            "last_working_day",
+            "order_types",
+            "skills",
+            "target_percent",
+            "qc_required",
+            "pf_applicable",
+            "pf_number",
+            "uan_number",
+            "esi_applicable",
+            "esi_number",
+            "esi_dispensary",
+            "shift",
+            "shift_detail",
+            "shift_effective_from",
+        ]
+        extra_kwargs = {"shift": {"write_only": True, "required": False}}
+ 
+    def validate(self, data):
+        get = lambda field, default=None: data.get(
+            field, getattr(self.instance, field, default)
+        )
+ 
+        category = get("category")
+        if category != EmployeeProfile.EmployeeCategory.VENDOR and (
+            get("vendor_name") or get("vendor_phone")
+        ):
+            raise serializers.ValidationError(
+                {"vendor_name": "Vendor details apply only to the VENDOR category."}
+            )
+ 
+        joined, last_day = get("date_joined"), get("last_working_day")
+        if joined and last_day and last_day < joined:
+            raise serializers.ValidationError(
+                {"last_working_day": "Last working day cannot precede the joining date."}
+            )
+ 
+        if get("pf_applicable", False) and not (get("pf_number") or get("uan_number")):
+            raise serializers.ValidationError(
+                {"pf_number": "PF number or UAN is required when PF is applicable."}
+            )
+ 
+        if get("esi_applicable", False) and not get("esi_number"):
+            raise serializers.ValidationError(
+                {"esi_number": "ESI number is required when ESI is applicable."}
+            )
+ 
+        if get("status") == EmployeeProfile.Status.TERMINATED and not last_day:
+            raise serializers.ValidationError(
+                {"last_working_day": "LWD is required when status is Terminated."}
+            )
+        return data
+ 
 class ReportsToMixin:
+    """Shared `reports_to` resolution for employee-facing serializers."""
+ 
     def get_reports_to(self, user):
         hierarchy = getattr(user, "hierarchy", None)
         if not hierarchy or not hierarchy.parent:
@@ -129,34 +378,110 @@ class ReportsToMixin:
             "name": parent.get_full_name(),
             "level": parent_hierarchy.level if parent_hierarchy else None,
         }
-
-class EmployeeListSerializer(ReportsToMixin, serializers.ModelSerializer):
+ 
+class AssignmentsMixin:
+    """Shared managed_*/assigned_* resolution — manager sees "managed_",
+    staff sees "assigned_" related sets on the same three entities."""
+ 
+    def get_venues(self, user):
+        qs = user.managed_venues.all() if user.is_manager else user.assigned_venues.all()
+        return VenueMiniSerializer(qs, many=True).data
+ 
+    def get_services(self, user):
+        qs = user.managed_services.all() if user.is_manager else user.assigned_services.all()
+        return ServiceMiniSerializer(qs, many=True).data
+ 
+    def get_resources(self, user):
+        qs = user.managed_resources.all() if user.is_manager else user.assigned_resource.all()
+        return ResourceMiniSerializer(qs, many=True).data
+ 
+class EmployeeSerializer(ReportsToMixin, AssignmentsMixin, BaseUserSerializer):
+    """Write serializer for VSRE_MANAGER, LINE_MANAGER, VSRE_STAFF."""
+ 
+    email = serializers.EmailField(required=False, allow_null=True, allow_blank=True)
+    employee_profile = EmployeeProfileSerializer(required=False)
     reports_to = serializers.SerializerMethodField()
     venues = serializers.SerializerMethodField()
     services = serializers.SerializerMethodField()
     resources = serializers.SerializerMethodField()
-
+ 
+    class Meta(BaseUserSerializer.Meta):
+        fields = BaseUserSerializer.Meta.fields + [
+            "employee_profile",
+            "reports_to",
+            "venues",
+            "services",
+            "resources",
+        ]
+ 
+    def validate_email(self, value):
+        return value or None
+ 
+    @transaction.atomic
+    def create(self, validated_data):
+        profile_data = validated_data.pop("employee_profile", {})
+        user = super().create(validated_data)
+        EmployeeProfile.objects.create(user=user, **profile_data)
+        return user
+ 
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        profile_data = validated_data.pop("employee_profile", None)
+        user = super().update(instance, validated_data)
+ 
+        if profile_data is not None:
+            profile, _ = EmployeeProfile.objects.get_or_create(user=user)
+            for attr, value in profile_data.items():
+                setattr(profile, attr, value)
+            profile.save()
+ 
+        return user
+  
+class EmployeeListSerializer(ReportsToMixin, AssignmentsMixin, serializers.ModelSerializer):
+    """Read-only list/detail view — managers and staff share one shape."""
+ 
+    reports_to = serializers.SerializerMethodField()
+    venues = serializers.SerializerMethodField()
+    services = serializers.SerializerMethodField()
+    resources = serializers.SerializerMethodField()
+    employee_profile = EmployeeProfileSerializer(read_only=True)
+ 
     class Meta:
         model = CustomUser
         fields = [
-            "id", "profile_pic", "first_name", "middle_name", "last_name",
-            "employee_id", "mobile_number", "email", "emergency_contact",
-            "user_type", "category", "skills", "is_active",
-            "reports_to", "venues", "services", "resources",
+            "id",
+            "profile_pic",
+            "first_name",
+            "middle_name",
+            "last_name",
+            "mobile_number",
+            "email",
+            "alternate_phone_number",
+            "emergency_contact_name",
+            "emergency_contact_number",
+            "age",
+            "user_type",
+            "is_active",
+            "employee_profile",
+            "reports_to",
+            "venues",
+            "services",
+            "resources",
         ]
 
-    def get_venues(self, user):
-        qs = user.managed_venues.all() if user.is_manager else user.assigned_venues.all()
-        return VenueMiniSerializer(qs, many=True).data
-
-    def get_services(self, user):
-        qs = user.managed_services.all() if user.is_manager else user.assigned_services.all()
-        return ServiceMiniSerializer(qs, many=True).data
-
-    def get_resources(self, user):
-        qs = user.managed_resources.all() if user.is_manager else user.assigned_resource.all()
-        return ResourceMiniSerializer(qs, many=True).data
-
+# ----------------------- Customer Serializer ---------------
+class CustomerSerializer(BaseUserSerializer):
+    """Serializer for Customers — created by Owner."""
+ 
+    class Meta(BaseUserSerializer.Meta):
+        fields = BaseUserSerializer.Meta.fields  # inherits all base fields
+ 
+    def validate(self, data):
+        data = super().validate(data)
+        if not self.instance:
+            data["user_type"] = CustomUser.UserTypes.CUSTOMER
+        return data
+ 
 class CustomerListSerializer(serializers.ModelSerializer):
     class Meta:
         model = CustomUser
@@ -169,6 +494,9 @@ class CustomerListSerializer(serializers.ModelSerializer):
             "mobile_number",
         ]
 
+ # ---------------------- User Document Serializers ----------------------
+
+# ----------------------- User Document Serializer ---------------
 class UserDocumentFilesSerializer(serializers.ModelSerializer):
     class Meta:
         model = UserDocumentFile
@@ -182,58 +510,6 @@ class UserDocumentSerializer(serializers.ModelSerializer):
         fields = "__all__"
         read_only_fields = ["uploaded_by"]
 
-# ---------------------- User user_type Profile Serializer ----------------------
-class OwnerSerializer(BaseUserSerializer):
-    """Serializer for VSRE Owners."""
-    owned_venues = VenueMiniSerializer(many=True, read_only=True)
-    owned_service = ServiceMiniSerializer(many=True, read_only=True)
-    owned_resoure = ResourceMiniSerializer(many=True, read_only=True)
-    
-    class Meta(BaseUserSerializer.Meta):
-        fields = BaseUserSerializer.Meta.fields + ["owned_venues", "owned_service","owned_resoure"]
-
-class EmployeeSerializer(ReportsToMixin, BaseUserSerializer):
-    email = serializers.EmailField(required=False, allow_null=True, allow_blank=True)
-    reports_to = serializers.SerializerMethodField()
-    venues = serializers.SerializerMethodField()
-    services = serializers.SerializerMethodField()
-    resources = serializers.SerializerMethodField()
-
-    class Meta(BaseUserSerializer.Meta):
-        fields = BaseUserSerializer.Meta.fields + [
-            "employee_id", "category", "skills",
-            "qc_required", "target_percent", "order_types",
-            "last_working_day", "reports_to", "venues", "services", "resources",
-        ]
-
-    def validate_email(self, value):
-        return value or None
-
-    def get_venues(self, user):
-        qs = user.managed_venues.all() if user.is_manager else user.assigned_venues.all()
-        return VenueMiniSerializer(qs, many=True).data
-
-    def get_services(self, user):
-        qs = user.managed_services.all() if user.is_manager else user.assigned_services.all()
-        return ServiceMiniSerializer(qs, many=True).data
-
-    def get_resources(self, user):
-        qs = user.managed_resources.all() if user.is_manager else user.assigned_resource.all()
-        return ResourceMiniSerializer(qs, many=True).data
-
-class CustomerSerializer(BaseUserSerializer):
-    """Serializer for Customers — created by Owner."""
-
-    class Meta(BaseUserSerializer.Meta):
-        fields = BaseUserSerializer.Meta.fields  # inherits all base fields
-
-    def validate(self, data):
-        data = super().validate(data)
-        # Enforce user_type on create
-        if not self.instance:
-            data["user_type"] = CustomUser.UserTypes.CUSTOMER
-        return data
-    
 # ---------------------- UserHierarchy Serializer ----------------------
 class UserHierarchySerializer(serializers.ModelSerializer):
     user_email = serializers.EmailField(source="user.email", read_only=True)
@@ -262,6 +538,7 @@ class ManagerHierarchySerializer(serializers.ModelSerializer):
 
     def get_name(self, obj):
         return obj.get_full_name()
+
 # ---------------------- Registration Serializer ----------------------
 class CustomerRegistrationSerializer(BaseUserSerializer):
     """Public registration for customers."""
@@ -271,7 +548,7 @@ class CustomerRegistrationSerializer(BaseUserSerializer):
         validated_data["created_by"] = None
         return super().create(validated_data)
 
-class VSREOwnerRegistrationSerializer(BaseUserSerializer):
+class OwnerRegistrationSerializer(BaseUserSerializer):
     """Public registration for VSRE owners (requires approval)."""
 
     def create(self, validated_data):
@@ -279,7 +556,6 @@ class VSREOwnerRegistrationSerializer(BaseUserSerializer):
         validated_data["user_type"] = "VSRE_OWNER"
         validated_data["created_by"] = None
         return super().create(validated_data)
-
 
 class UserLoginSerializer(serializers.Serializer):
     username = serializers.CharField(write_only=True)
@@ -294,11 +570,9 @@ class UserLoginSerializer(serializers.Serializer):
         data["user"] = user
         return data
 
-
 class ChangePasswordSerializer(serializers.Serializer):
     old_password = serializers.CharField(write_only=True)
     new_password = serializers.CharField(write_only=True)
-
 
 class RequestOTPSerializer(serializers.Serializer):
     email = serializers.EmailField()
@@ -314,12 +588,9 @@ class RequestOTPSerializer(serializers.Serializer):
             raise serializers.ValidationError("Channel is not valid")
         return value
     
-
-
 class VerifyOTPSerializer(serializers.Serializer):
     email = serializers.EmailField()
     otp   = serializers.CharField(max_length=6, min_length=6)
-
 
 class ResetPasswordSerializer(serializers.Serializer):
     reset_token      = serializers.UUIDField()
@@ -330,6 +601,7 @@ class ResetPasswordSerializer(serializers.Serializer):
         if attrs["new_password"] != attrs["confirm_password"]:
             raise serializers.ValidationError({"confirm_password": "Passwords do not match."})
         return attrs
+
 # ---------------------- PricingModel Serializer ----------------------
 class PricingModelSerializer(serializers.ModelSerializer):
     created_by_email = serializers.EmailField(source="created_by.email", read_only=True)
