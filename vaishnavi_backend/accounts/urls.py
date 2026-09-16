@@ -6,6 +6,7 @@ app_name = 'venue_manager'
 
 router = routers.DefaultRouter()
 
+router.register(r'shifts', ShiftScheduleViewSet, basename='shifts')
 router.register(r'employees', EmployeeViewSet, basename='employees')
 router.register(r'customers', CustomerViewSet, basename='customers')
 router.register(r'user-documents', UserDocumentViewSet, basename='user-documents')

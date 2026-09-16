@@ -9,7 +9,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated,AllowAny
 from rest_framework.exceptions import PermissionDenied, ValidationError
-from .permissions import CanManageEmployees, IsOwner
+from .permissions import CanManageEmployees, IsOwner, IsOwnerOrReadOnly
 from .models import CustomUser, UserHierarchy, PricingModel, UserPlan,StaffForHire
 from .serializers import *
 from .utils import send_otp,PasswordResetOTP
@@ -211,6 +211,30 @@ class UserProfileView(APIView):
         serializer.save()
         return Response(serializer.data)
 
+class ShiftScheduleViewSet(viewsets.ModelViewSet):
+    """
+    CRUD API for ShiftSchedule.
+
+    Only MASTER_ADMIN and VSRE_OWNER
+    can create, read, update, and delete shifts.
+    """
+
+    queryset = ShiftSchedule.objects.all()
+    serializer_class = ShiftScheduleSerializer
+
+    permission_classes = [
+        IsAuthenticated,
+        IsOwnerOrReadOnly,
+    ]
+
+    def get_queryset(self):
+        """
+        Return shifts ordered by start time.
+        """
+        return ShiftSchedule.objects.all().order_by(
+            "start_time"
+        )
+    
 class EmployeeViewSet(viewsets.ModelViewSet):
     """
     - Owner   -> full CRUD on every employee in their hierarchy

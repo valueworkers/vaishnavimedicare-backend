@@ -16,6 +16,30 @@ class IsMasterAdmin(BasePermission):
     def is_vsre_staff(self):
         return self.user_type in [self.UserTypes.VSRE_STAFF]
 
+class IsOwnerOrReadOnly(BasePermission):
+    """
+    MASTER_ADMIN and VSRE_OWNER can perform all operations.
+    Any authenticated user can perform safe/read-only operations.
+    """
+
+    allowed_roles = {
+        "MASTER_ADMIN",
+        "VSRE_OWNER",
+    }
+
+    def has_permission(self, request, view):
+        user = request.user
+
+        if not user or not user.is_authenticated:
+            return False
+
+        # Read-only requests are allowed for all authenticated users
+        if request.method in ("GET", "HEAD", "OPTIONS"):
+            return True
+
+        # Write operations are restricted to owners
+        return user.user_type in self.allowed_roles
+    
 class IsOwner(BasePermission):
     """Allow only VSRE_OWNER."""
     def has_permission(self, request, view):

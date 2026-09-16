@@ -266,6 +266,7 @@ class OwnerSerializer(BaseUserSerializer):
         ]
 
  # ---------------------- Shift Schedule Serializer ----------------------
+
 class ShiftScheduleSerializer(serializers.ModelSerializer):
     class Meta:
         model = ShiftSchedule
@@ -279,18 +280,66 @@ class ShiftScheduleSerializer(serializers.ModelSerializer):
             "weekly_off_days",
             "is_active",
         ]
- 
-    def validate(self, data):
-        is_overnight = data.get(
-            "is_overnight", getattr(self.instance, "is_overnight", False)
-        )
-        start = data.get("start_time", getattr(self.instance, "start_time", None))
-        end = data.get("end_time", getattr(self.instance, "end_time", None))
-        if not is_overnight and start and end and end <= start:
+        read_only_fields = ["id"]
+
+    def validate_weekly_off_days(self, value):
+        """
+        Validate that weekly_off_days contains valid weekday values.
+        Monday = 0, Sunday = 6.
+        """
+        if not isinstance(value, list):
             raise serializers.ValidationError(
-                {"end_time": "End time must be after start time, or mark the shift as overnight."}
+                "weekly_off_days must be a list."
             )
-        return data
+
+        if not all(
+            isinstance(day, int) and 0 <= day <= 6
+            for day in value
+        ):
+            raise serializers.ValidationError(
+                "Each weekday must be an integer between 0 and 6."
+            )
+
+        if len(value) != len(set(value)):
+            raise serializers.ValidationError(
+                "Duplicate weekday values are not allowed."
+            )
+
+        return value
+
+    def validate(self, attrs):
+        """
+        Validate shift timing.
+        Overnight shifts may have an end time earlier than
+        or equal to the start time.
+        """
+        start_time = attrs.get(
+            "start_time",
+            getattr(self.instance, "start_time", None)
+        )
+        end_time = attrs.get(
+            "end_time",
+            getattr(self.instance, "end_time", None)
+        )
+        is_overnight = attrs.get(
+            "is_overnight",
+            getattr(self.instance, "is_overnight", False)
+        )
+
+        if (
+            start_time is not None
+            and end_time is not None
+            and not is_overnight
+            and end_time <= start_time
+        ):
+            raise serializers.ValidationError({
+                "end_time": (
+                    "End time must be after start time, "
+                    "or mark the shift as overnight."
+                )
+            })
+
+        return attrs
  
 # ----------------------- Employee Serializer ---------------
 class EmployeeProfileSerializer(serializers.ModelSerializer):
