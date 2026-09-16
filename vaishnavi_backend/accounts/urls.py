@@ -7,8 +7,7 @@ app_name = 'venue_manager'
 router = routers.DefaultRouter()
 
 router.register(r'vsre-owner', OwnerViewSet, basename='vsre-owner')
-router.register(r'vsre-manager', ManagerViewSet, basename='vsre-manager')
-router.register(r'vsre-staff', StaffViewSet, basename='vsre-staff')
+router.register(r'employees', EmployeeViewSet, basename='employees')
 router.register(r'customers', CustomerViewSet, basename='customers')
 router.register(r'user-documents', UserDocumentViewSet, basename='user-documents')
 router.register(r'pricing-models', PricingModelViewSet, basename='pricing-models')

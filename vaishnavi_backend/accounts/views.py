@@ -8,6 +8,7 @@ from rest_framework.views import APIView
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated,AllowAny
+from rest_framework.exceptions import PermissionDenied
 from .permissions import IsVSREOwner,IsCreator,IsVSREOwnerOrManager,IsMasterAdmin
 from .models import CustomUser, UserHierarchy, PricingModel, UserPlan,StaffForHire
 from .serializers import *
@@ -190,10 +191,8 @@ class UserProfileView(APIView):
     def get_serializer_class(self, user):
         if user.is_owner:
             return OwnerSerializer
-        elif user.is_manager:
-            return ManagerSerializer
-        elif user.is_vsre_staff:
-            return StaffSerializer
+        elif user.is_manager or user.is_vsre_staff:
+            return EmployeeSerializer
         return CustomerSerializer
     
     def get(self, request):
@@ -302,115 +301,61 @@ class OwnerViewSet(viewsets.ReadOnlyModelViewSet):
 
         return Response(data)
 
-class ManagerViewSet(viewsets.ModelViewSet):
-    """
-    Allows VSRE_OWNER to manage their own VSRE_MANAGER users.
-    """
-    serializer_class = ManagerSerializer
-    
-    permission_classes = [ IsVSREOwner, IsCreator]
-    filterset_fields = ["is_active", "city", "category"]
+class EmployeeViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsAuthenticated, IsCreator, IsVSREOwner]
+    filterset_fields = ["is_active", "city", "category", "user_type"]
     search_fields = [
-        "first_name",
-        "middle_name",
-        "last_name",
-        "employee_id",
-        "mobile_number",
-        "email",
-        "emergency_contact",
-        "category",
-        "skills"
+        "first_name", "middle_name", "last_name", "employee_id",
+        "mobile_number", "email", "emergency_contact", "category", "skills",
     ]
 
     def get_queryset(self):
-        """Return only managers created by this owner."""
-        request_user = self.request.user
-        queryset = CustomUser.objects.managers()
-        
-        if request_user.is_superuser:
-            return queryset
-        
-        if request_user.is_owner:
-            return queryset.filter(hierarchy__owner=request_user)
-        
-        if request_user.is_manager:
-            return queryset.filter(hierarchy__parent=request_user)
-        
+        user = self.request.user
+        qs = CustomUser.objects.employees()
+
+        if user.is_superuser:
+            return qs
+        if user.is_owner:
+            return qs.filter(hierarchy__owner=user)
+        if user.is_manager:
+            return qs.filter(
+                hierarchy__parent=user,
+                user_type=CustomUser.UserTypes.VSRE_STAFF,
+            )
+        return qs.none()
+
     def get_serializer_class(self):
-        if self.action == "list":
-            return ManagerListSerializer
-        return ManagerSerializer
-       
+        return EmployeeListSerializer if self.action == "list" else EmployeeSerializer
+
     def get_serializer_context(self):
         context = super().get_serializer_context()
         context["request"] = self.request
         return context
 
     def perform_create(self, serializer):
-        # create user first
-        user = serializer.save(
-            user_type=CustomUser.UserTypes.VSRE_MANAGER,
-            
-        )
-        return user
-    
+        request_user = self.request.user
+        user_type = self.request.data.get("user_type")
+
+        allowed_types = {
+            CustomUser.UserTypes.VSRE_MANAGER,
+            CustomUser.UserTypes.LINE_MANAGER,
+            CustomUser.UserTypes.VSRE_STAFF,
+        }
+        if user_type not in allowed_types:
+            raise serializers.ValidationError(
+                {"user_type": "Must be one of VSRE_MANAGER, LINE_MANAGER, VSRE_STAFF."}
+            )
+        if user_type in {CustomUser.UserTypes.VSRE_MANAGER, CustomUser.UserTypes.LINE_MANAGER} \
+                and not request_user.is_owner:
+            raise PermissionDenied("Only an owner can create manager-level employees.")
+
+        serializer.save(user_type=user_type, created_by=request_user)
+
     def perform_destroy(self, instance):
         if hasattr(instance, "soft_delete"):
             instance.soft_delete()
         else:
             instance.delete()
-
-class StaffViewSet(viewsets.ModelViewSet):
-    """
-    Allows both VSRE_OWNER and VSRE_MANAGER to manage their own VSRE_STAFF users.
-    """
-    serializer_class = StaffSerializer
-    
-    permission_classes = [IsAuthenticated,IsCreator,IsVSREOwnerOrManager]
-    filterset_fields = ["is_active", "city", "category"]
-    search_fields = [
-        "first_name",
-        "middle_name",
-        "last_name",
-        "employee_id",
-        "mobile_number",
-        "email",
-        "emergency_contact",
-        "category",
-        "skills"
-    ]
-
-    def get_queryset(self):
-        """
-        Return only staff created by the logged-in owner/manager.
-        """
-        return CustomUser.objects.filter(
-            created_by=self.request.user,
-            hierarchy__owner=self.request.user,
-            user_type=CustomUser.UserTypes.VSRE_STAFF,
-            is_deleted= False,
-        )
-    def get_serializer_class(self):
-        if self.action == "list":
-            return StaffListSerializer
-        return StaffSerializer
-    
-    def get_serializer_context(self):
-        context = super().get_serializer_context()
-        context["request"] = self.request
-        return context
-
-    def perform_create(self, serializer):
-        # create user first
-        user = serializer.save(user_type=CustomUser.UserTypes.VSRE_STAFF)
-        return user
-    
-    def perform_destroy(self, instance):
-        
-        if hasattr(instance, "soft_delete"):
-            instance.soft_delete()
-        # else:
-        #     instance.delete()
 
 class CustomerViewSet(viewsets.ModelViewSet):
     """

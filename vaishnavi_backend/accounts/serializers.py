@@ -117,88 +117,45 @@ class BaseUserSerializer(serializers.ModelSerializer):
         return instance
 
 # ----------------------- User Minimul list serializers ---------------
-class ManagerListSerializer(serializers.ModelSerializer):
-    reports_to = serializers.SerializerMethodField()
-    managed_venues = VenueMiniSerializer(many=True, read_only=True)
-    managed_services = ServiceMiniSerializer(many=True, read_only=True)
-    managed_resources = ResourceMiniSerializer(many=True, read_only=True)
-
-    class Meta:
-        model = CustomUser
-        fields = [
-            "id",
-            "profile_pic",
-            "first_name",
-            "middle_name",
-            "last_name",
-            "employee_id",
-            "mobile_number",
-            "email",
-            "emergency_contact",
-            "category",
-            "skills",
-            "is_active",
-            "reports_to",
-            "managed_venues",
-            "managed_services",
-            "managed_resources",
-        ]
-
+class ReportsToMixin:
     def get_reports_to(self, user):
         hierarchy = getattr(user, "hierarchy", None)
         if not hierarchy or not hierarchy.parent:
             return None
-
         parent = hierarchy.parent
         parent_hierarchy = getattr(parent, "hierarchy", None)
-
         return {
             "id": parent.id,
             "name": parent.get_full_name(),
             "level": parent_hierarchy.level if parent_hierarchy else None,
         }
 
-class StaffListSerializer(serializers.ModelSerializer):
+class EmployeeListSerializer(ReportsToMixin, serializers.ModelSerializer):
     reports_to = serializers.SerializerMethodField()
-    assigned_venues = VenueMiniSerializer(many=True, read_only=True)
-    assigned_services = ServiceMiniSerializer(many=True, read_only=True)
-    assigned_resource = ResourceMiniSerializer(many=True, read_only=True)
+    venues = serializers.SerializerMethodField()
+    services = serializers.SerializerMethodField()
+    resources = serializers.SerializerMethodField()
 
     class Meta:
         model = CustomUser
         fields = [
-            "id",
-            "profile_pic",
-            "first_name",
-            "middle_name",
-            "last_name",
-            "employee_id",
-            "mobile_number",
-            "email",
-            "emergency_contact",
-            "category",
-            "skills",
-            "is_active",
-            "reports_to",
-            "assigned_venues",
-            "assigned_venues",
-            "assigned_services",
-            "assigned_resource",
+            "id", "profile_pic", "first_name", "middle_name", "last_name",
+            "employee_id", "mobile_number", "email", "emergency_contact",
+            "user_type", "category", "skills", "is_active",
+            "reports_to", "venues", "services", "resources",
         ]
 
-    def get_reports_to(self, user):
-        hierarchy = getattr(user, "hierarchy", None)
-        if not hierarchy or not hierarchy.parent:
-            return None
+    def get_venues(self, user):
+        qs = user.managed_venues.all() if user.is_manager else user.assigned_venues.all()
+        return VenueMiniSerializer(qs, many=True).data
 
-        parent = hierarchy.parent
-        parent_hierarchy = getattr(parent, "hierarchy", None)
+    def get_services(self, user):
+        qs = user.managed_services.all() if user.is_manager else user.assigned_services.all()
+        return ServiceMiniSerializer(qs, many=True).data
 
-        return {
-            "id": parent.id,
-            "name": parent.get_full_name(),
-            "level": parent_hierarchy.level if parent_hierarchy else None,
-        }
+    def get_resources(self, user):
+        qs = user.managed_resources.all() if user.is_manager else user.assigned_resource.all()
+        return ResourceMiniSerializer(qs, many=True).data
 
 class CustomerListSerializer(serializers.ModelSerializer):
     class Meta:
@@ -235,86 +192,34 @@ class OwnerSerializer(BaseUserSerializer):
     class Meta(BaseUserSerializer.Meta):
         fields = BaseUserSerializer.Meta.fields + ["owned_venues", "owned_service","owned_resoure"]
 
-class ManagerSerializer(BaseUserSerializer):
-    reports_to = serializers.SerializerMethodField()
-    managed_venues = VenueMiniSerializer(many=True, read_only=True)
-    managed_services = ServiceMiniSerializer(many=True, read_only=True)
-    managed_resources = ResourceMiniSerializer(many=True, read_only=True)
-
-    class Meta(BaseUserSerializer.Meta):
-        fields = BaseUserSerializer.Meta.fields + [
-            "employee_id",
-            "category",
-            "skills",
-            "qc_required",
-            "last_working_day",
-            "reports_to",
-            "managed_venues",
-            "managed_services",
-            "managed_resources",
-        ]
-
-    def get_reports_to(self, user):
-        hierarchy = getattr(user, "hierarchy", None)
-        if not hierarchy:
-            return None
-
-        parent = hierarchy.parent
-        if not parent:
-            return None
-
-        parent_hierarchy = getattr(parent, "hierarchy", None)
-        parent_level = parent_hierarchy.level if parent_hierarchy else None
-
-        return {
-            "id": parent.id,
-            "name": parent.get_full_name(),
-            "level": parent_level
-        }
-
-class StaffSerializer(BaseUserSerializer):
-    """Serializer for VSRE Staff."""
+class EmployeeSerializer(ReportsToMixin, BaseUserSerializer):
     email = serializers.EmailField(required=False, allow_null=True, allow_blank=True)
     reports_to = serializers.SerializerMethodField()
-    
-    assigned_venues = VenueMiniSerializer(many=True, read_only=True)
-    assigned_services = ServiceMiniSerializer(many=True, read_only=True)
-    assigned_resource = ResourceMiniSerializer(many=True, read_only=True)
+    venues = serializers.SerializerMethodField()
+    services = serializers.SerializerMethodField()
+    resources = serializers.SerializerMethodField()
 
     class Meta(BaseUserSerializer.Meta):
         fields = BaseUserSerializer.Meta.fields + [
-            "employee_id",
-            "category",
-            "skills",
-            "target_percent",
-            "order_types",
-            "last_working_day",
-            "reports_to",
-            "assigned_venues",
-            "assigned_services",
-            "assigned_resource",
+            "employee_id", "category", "skills",
+            "qc_required", "target_percent", "order_types",
+            "last_working_day", "reports_to", "venues", "services", "resources",
         ]
+
     def validate_email(self, value):
-        # Coerce blank string to None so the unique constraint never sees ""
         return value or None
-     
-    def get_reports_to(self, user):
-        hierarchy = getattr(user, "hierarchy", None)
-        if not hierarchy:
-            return None
 
-        parent = hierarchy.parent
-        if not parent:
-            return None
+    def get_venues(self, user):
+        qs = user.managed_venues.all() if user.is_manager else user.assigned_venues.all()
+        return VenueMiniSerializer(qs, many=True).data
 
-        parent_hierarchy = getattr(parent, "hierarchy", None)
-        parent_level = parent_hierarchy.level if parent_hierarchy else None
+    def get_services(self, user):
+        qs = user.managed_services.all() if user.is_manager else user.assigned_services.all()
+        return ServiceMiniSerializer(qs, many=True).data
 
-        return {
-            "id": parent.id,
-            "name": parent.get_full_name(),
-            "level": parent_level
-        }
+    def get_resources(self, user):
+        qs = user.managed_resources.all() if user.is_manager else user.assigned_resource.all()
+        return ResourceMiniSerializer(qs, many=True).data
 
 class CustomerSerializer(BaseUserSerializer):
     """Serializer for Customers — created by Owner."""

@@ -33,6 +33,14 @@ class CustomUserManager(BaseUserManager):
     def owners(self):
         return self.filter(user_type=CustomUser.UserTypes.VSRE_OWNER)
 
+    def employees(self):
+            return self.filter(
+                user_type__in=[
+                    CustomUser.UserTypes.VSRE_MANAGER,
+                    CustomUser.UserTypes.LINE_MANAGER,
+                    CustomUser.UserTypes.VSRE_STAFF,
+                ]
+            )
     def managers(self):
         return self.filter(
             user_type__in=[
