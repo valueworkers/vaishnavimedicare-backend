@@ -254,12 +254,9 @@ class EmployeeViewSet(viewsets.ModelViewSet):
         "first_name",
         "middle_name",
         "last_name",
-        "mobile_number",
-        "email",
-        "emergency_contact",
-        "employee_profile__employee_id",
-        "employee_profile__category",
-        "employee_profile__skills",
+        "=mobile_number",
+        "=email",
+        "=employee_profile__employee_id"
     ]
     ordering_fields = ["id", "first_name", "last_name", "employee_profile__date_joined"]
     ordering = ["id"]
