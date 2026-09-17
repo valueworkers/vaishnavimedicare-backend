@@ -248,6 +248,7 @@ class EmployeeViewSet(viewsets.ModelViewSet):
         "city": ["exact", "icontains"],
         "user_type": ["exact", "in"],
         "employee_profile__category": ["exact", "in"],
+        "employee_profile__status": ["exact", "in"],
         "employee_profile__date_joined": ["gte", "lte"],
     }
     search_fields = [
