@@ -10,11 +10,63 @@ from dateutil.relativedelta import relativedelta
 from django.db import transaction as db_transaction
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
-from django.db.models import Sum
+from django.db.models import Sum, OuterRef, Subquery
 from vaishnavi_backend.pagination import StandardResultsSetPagination
 from accounts.models import CustomUser
 
 
+class EmployeePayrollListViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    Read-only payroll summary list, scoped by the same hierarchy rules
+    as SalaryStructureViewSet.
+    """
+    serializer_class = EmployeePayrollListSerializer
+    permission_classes = [IsAuthenticated]
+
+    filterset_fields = ["user_type"]
+    search_fields = [
+        "first_name",
+        "last_name",
+        "employee_profile__employee_id",
+        "employee_profile__vendor_name",
+        "=email",
+        "=mobile_number",
+    ]
+
+    def get_queryset(self):
+        user = self.request.user
+
+        latest_salary = SalaryStructure.objects.filter(
+            user=OuterRef("pk"),
+        ).order_by("-effective_from", "-pk")
+
+        latest_txn = SalaryTransaction.objects.filter(
+            salary_report__user=OuterRef("pk"),
+            status="SUCCESS",
+        ).order_by("-processed_at", "-created_at")
+
+        base_qs = (
+            CustomUser.objects
+            .select_related("employee_profile")
+            .annotate(
+                basic_salary=Subquery(latest_salary.values("final_salary")[:1]),
+                pf_amount=Subquery(latest_salary.values("pf_amount")[:1]),
+                esi_amount=Subquery(latest_salary.values("esi_amount")[:1]),
+                effective_date=Subquery(latest_salary.values("effective_from")[:1]),
+                recent_payment=Subquery(latest_txn.values("amount_paid")[:1]),
+                payout_mode=Subquery(latest_txn.values("payment_method")[:1]),
+            )
+        )
+
+        if user.is_superuser or user.is_owner:
+            queryset = base_qs
+
+        else:
+            # Manager/Staff → only their own row
+            queryset = base_qs.filter(id=user.id)
+
+        return queryset.order_by("first_name", "last_name")
+    
 class SalaryStructureViewSet(viewsets.ModelViewSet):
     """
     ViewSet for managing salary structures
@@ -25,7 +77,6 @@ class SalaryStructureViewSet(viewsets.ModelViewSet):
 
     filterset_fields = [
         "user_id",
-        "salary_type",
         "change_type",
         "effective_from",
     ]
@@ -44,18 +95,21 @@ class SalaryStructureViewSet(viewsets.ModelViewSet):
         user = self.request.user
 
         # Admin → see everything
-        if user.is_superuser:
+        if user.is_superuser or user.is_owner:
             queryset = SalaryStructure.objects.all()
-
-        # Owner → see salary structures of their staff + managers
-        elif getattr(user, "is_owner", False):
-            queryset = SalaryStructure.objects.filter(user__hierarchy__owner=user)
 
         # Staff or Manager → see only their own salary structure
         else:
             queryset = SalaryStructure.objects.filter(user=user)
         return queryset.select_related("user").order_by("-effective_from")
 
+    def perform_create(self, serializer):
+        instance = serializer.save()
+        instance.refresh_from_db()
+
+    def perform_update(self, serializer):
+        instance = serializer.save()
+        instance.refresh_from_db()
 
 class SalaryReportAPIView(APIView):
     """
@@ -178,7 +232,6 @@ class SalaryReportAPIView(APIView):
             "paid_amount": float(data["paid_amount"]),
             "remaining_payment": float(data["remaining_payment"]),
         }
-
 
 class SalaryTransactionViewSet(viewsets.ModelViewSet):
     serializer_class = SalaryTransactionSerializer

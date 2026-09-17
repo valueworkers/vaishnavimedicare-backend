@@ -23,37 +23,17 @@ class SalaryStructure(models.Model):
         ("LOAN", "Loan"),
     ]
 
-    user = models.ForeignKey(
-        CustomUser,
-        on_delete=models.CASCADE,
-        related_name="salary_structures"
-    )
-
-    salary_type = models.CharField(
-        max_length=20,
-        choices=SALARY_TYPE_CHOICES,
-        default="MONTHLY"
-    )
-
-    change_type = models.CharField(
-        max_length=20,
-        choices=SALARY_CHANGE_TYPE,
-        default="BASE_SALARY"
-    )
-
-    amount = models.DecimalField(
-        max_digits=10,
-        decimal_places=2
-    )
-
-    final_salary = models.DecimalField(
-        max_digits=12,
-        decimal_places=2,
-        default=0
-    )
+    user = models.ForeignKey(CustomUser,on_delete=models.CASCADE,related_name="salary_structures",)
+    salary_type = models.CharField(max_length=20,choices=SALARY_TYPE_CHOICES,default="MONTHLY",)
+    change_type = models.CharField(max_length=20,choices=SALARY_CHANGE_TYPE,default="BASE_SALARY",)
+    
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    pf_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    esi_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    final_salary = models.DecimalField(max_digits=12, decimal_places=2, default=0)
 
     effective_from = models.DateField()
-    
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -68,39 +48,8 @@ class SalaryStructure(models.Model):
             )
         ]
 
-
     def save(self, *args, **kwargs):
-        """
-        Salary calculation rules:
-        - BASE_SALARY → sets final_salary
-        - INCREMENT → final_salary = latest final_salary + increment
-        """
         self.full_clean()
-        # Fetch last salary record before this effective date (excluding current record)
-        previous = (
-            SalaryStructure.objects
-            .filter(
-                user=self.user,
-                effective_from__lte=self.effective_from,
-                change_type__in=["BASE_SALARY","INCREMENT"]
-            )
-            .exclude(pk=self.pk)  # Exclude current record
-            .order_by("-effective_from")
-            .first()
-        )
-
-        previous_salary = previous.final_salary if previous else 0
-
-        if self.change_type == "BASE_SALARY":
-            self.final_salary = self.amount
-
-        elif self.change_type == "INCREMENT":
-            self.final_salary = previous_salary + self.amount
-
-        elif self.change_type in ["ADVANCE", "LOAN"]:
-            # Salary unchanged, deductions handled elsewhere if needed
-            self.final_salary = previous_salary
-
         super().save(*args, **kwargs)
 
 class SalaryReport(models.Model):
