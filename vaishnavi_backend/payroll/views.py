@@ -14,8 +14,7 @@ from django.db.models import Sum, OuterRef, Subquery
 from vaishnavi_backend.pagination import StandardResultsSetPagination
 from accounts.models import CustomUser
 
-
-class EmployeePayrollListViewSet(viewsets.ReadOnlyModelViewSet):
+class EmployeePayrollViewSet(viewsets.ReadOnlyModelViewSet):
     """
     Read-only payroll summary list, scoped by the same hierarchy rules
     as SalaryStructureViewSet.
@@ -24,6 +23,7 @@ class EmployeePayrollListViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [IsAuthenticated]
 
     filterset_fields = ["user_type"]
+
     search_fields = [
         "first_name",
         "last_name",
@@ -32,6 +32,17 @@ class EmployeePayrollListViewSet(viewsets.ReadOnlyModelViewSet):
         "=email",
         "=mobile_number",
     ]
+
+    ordering_fields = [
+        "first_name",
+        "last_name",
+        "basic_salary",
+        "pf_amount",
+        "esi_amount",
+        "effective_date",
+        "recent_payment",
+    ]
+    ordering = ["first_name", "last_name"]
 
     def get_queryset(self):
         user = self.request.user
@@ -60,13 +71,11 @@ class EmployeePayrollListViewSet(viewsets.ReadOnlyModelViewSet):
 
         if user.is_superuser or user.is_owner:
             queryset = base_qs
-
         else:
             # Manager/Staff → only their own row
             queryset = base_qs.filter(id=user.id)
 
-        return queryset.order_by("first_name", "last_name")
-    
+        return queryset
 class SalaryStructureViewSet(viewsets.ModelViewSet):
     """
     ViewSet for managing salary structures

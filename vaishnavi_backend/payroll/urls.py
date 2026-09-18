@@ -5,7 +5,7 @@ from . import views
 app_name = 'payroll'
 
 router = DefaultRouter()
-router.register(r'employee-payroll', views.EmployeePayrollListViewSet, basename='emp-payroll-list')
+router.register(r'employee-payroll', views.EmployeePayrollViewSet, basename='emp-payroll-list')
 router.register(r'salary-structures', views.SalaryStructureViewSet, basename='salary-structure')
 router.register(r'salary-transactions', views.SalaryTransactionViewSet, basename='salary-transaction')
 
