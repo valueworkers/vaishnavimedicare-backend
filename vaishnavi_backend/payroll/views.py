@@ -1,8 +1,9 @@
+from decimal import Decimal
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from .models import *
 from .serializers import *
-from .utils import SalaryCalculator 
+from .utils import SalaryCalculator
 from rest_framework import viewsets, status
 from datetime import datetime, timedelta
 from rest_framework.views import APIView
@@ -11,8 +12,8 @@ from django.db import transaction as db_transaction
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
 from django.db.models import Sum, OuterRef, Subquery
-from vaishnavi_backend.pagination import StandardResultsSetPagination
 from accounts.models import CustomUser
+from .permissions import CanViewSalaryReport
 
 class EmployeePayrollViewSet(viewsets.ReadOnlyModelViewSet):
     """
@@ -30,7 +31,7 @@ class EmployeePayrollViewSet(viewsets.ReadOnlyModelViewSet):
         "email",
         "mobile_number",
         "employee_profile__category",
-        "employee_profile__vendor_name",        
+        "employee_profile__vendor_name",
     ]
 
     search_fields = [
@@ -56,7 +57,7 @@ class EmployeePayrollViewSet(viewsets.ReadOnlyModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        
+
         latest_salary = SalaryStructure.objects.filter(
             user=OuterRef("pk"),
         ).order_by("-effective_from", "-pk")
@@ -65,8 +66,6 @@ class EmployeePayrollViewSet(viewsets.ReadOnlyModelViewSet):
             salary_report__user=OuterRef("pk"),
             status="SUCCESS",
         ).order_by("-processed_at", "-created_at")
-
-        print(CustomUser.objects.employees())
 
         base_qs = (
             CustomUser.objects
@@ -89,7 +88,7 @@ class EmployeePayrollViewSet(viewsets.ReadOnlyModelViewSet):
             queryset = base_qs.filter(id=user.id)
 
         return queryset
-    
+
 class SalaryStructureViewSet(viewsets.ModelViewSet):
     """
     ViewSet for managing salary structures
@@ -137,9 +136,10 @@ class SalaryStructureViewSet(viewsets.ModelViewSet):
 class SalaryReportAPIView(APIView):
     """
     Compute salary reports on-the-fly from attendance data.
-    
+
     GET /api/salary-reports/
-    GET /api/salary-reports/<id>/
+    GET /api/salary-reports/<id>/   -- looks up a persisted SalaryReport row
+                                        (written by SalaryCalculator.refresh_salary_reports)
 
     Filters:
     - Default: last 6 months
@@ -149,9 +149,29 @@ class SalaryReportAPIView(APIView):
     - ?user_id=123
     """
 
+    permission_classes = [CanViewSalaryReport]
+
     def get(self, request, pk=None):
         user = request.user
         params = request.query_params
+
+        # ----- Single report retrieval by primary key -----
+        if pk:
+            report = get_object_or_404(SalaryReport.objects.select_related("user"), pk=pk)
+            self.check_object_permissions(request, report)
+
+            return Response(
+                self._format_report(report.user, {
+                    "start_date": report.start_date,
+                    "end_date": report.end_date,
+                    "final_salary": report.final_salary,
+                    "advance_amount": report.advance_amount,
+                    "total_payable_amount": report.total_payable_amount,
+                    "paid_amount": report.paid_amount,
+                    "remaining_payment": report.remaining_payment,
+                }),
+                status=status.HTTP_200_OK,
+            )
 
         # Initialize default date range (6 months to end of current month)
         today = datetime.now().date()
@@ -189,25 +209,10 @@ class SalaryReportAPIView(APIView):
 
         # ----- User filter -----
         user_id = params.get("user_id")
-        
+
         if user_id:
             target_user = get_object_or_404(CustomUser, id=user_id)
-            
-            # Permission check
-            if not user.is_superuser:
-                if user.is_owner:
-                    if not CustomUser.objects.filter(
-                        id=user_id, hierarchy__owner=user
-                    ).exists():
-                        return Response(
-                            {'error': 'You do not have permission to view this user\'s reports'},
-                            status=status.HTTP_403_FORBIDDEN
-                        )
-                elif target_user != user:
-                    return Response(
-                        {'error': 'You can only view your own reports'},
-                        status=status.HTTP_403_FORBIDDEN
-                    )
+            self.check_object_permissions(request, target_user)
             target_users = [target_user]
         else:
             # Determine which users we can see
@@ -226,22 +231,13 @@ class SalaryReportAPIView(APIView):
                 start_date=start_date,
                 end_date=end_date
             )
-            
+
             for report in salary_reports:
                 results.append(self._format_report(target_user, report))
 
         # Sort by start_date descending
         results.sort(key=lambda r: r["start_date"], reverse=True)
 
-        # ----- Handle single report retrieval -----
-        if pk:
-            # Find report by matching start_date or some unique identifier
-            # Since we don't have DB IDs, we need to handle this differently
-            # For now, return 404 as we can't retrieve by ID without DB
-            return Response(
-                {"detail": "Single report retrieval by ID not supported in computed mode"},
-                status=status.HTTP_404_NOT_FOUND,
-            )
         return Response(results, status=status.HTTP_200_OK)
 
     def _format_report(self, user, data):
@@ -262,10 +258,8 @@ class SalaryTransactionViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        if user.is_superuser:
+        if user.is_superuser or user.is_owner:
             queryset = SalaryTransaction.objects.all()
-        elif user.is_owner:
-            queryset = SalaryTransaction.objects.filter(salary_report__user__hierarchy__owner=user)
         else:
             queryset = SalaryTransaction.objects.filter(salary_report__user=user)
 
@@ -296,9 +290,11 @@ class SalaryTransactionViewSet(viewsets.ModelViewSet):
             id=serializer.validated_data['salary_report_id']
         )
 
-        # Permission Check: Only Owner or Admin can create transactions for their staff
+        # Permission check: only Owner (of this employee) or Admin can
+        # record payments.
         if not user.is_superuser:
-            if not user.is_owner or salary_report.user.hierarchy.owner != user:
+            owner_id = getattr(getattr(salary_report.user, "hierarchy", None), "owner_id", None)
+            if not user.is_owner or owner_id != user.id:
                 return Response(
                     {"detail": "You do not have permission to record payments for this report."},
                     status=status.HTTP_403_FORBIDDEN
@@ -306,38 +302,39 @@ class SalaryTransactionViewSet(viewsets.ModelViewSet):
 
         amount_paid = serializer.validated_data['amount_paid']
 
-        existing_transaction = SalaryTransaction.objects.filter(
-            salary_report=salary_report
-        ).order_by('-created_at').first()
+        # Transactions are an immutable audit trail — always create a new
+        # record for this payment rather than rewriting an existing one.
+        # Supersede any stale PENDING/PROCESSING transaction instead of
+        # overwriting its data.
+        SalaryTransaction.objects.filter(
+            salary_report=salary_report,
+            status__in=['PENDING', 'PROCESSING'],
+        ).update(status='CANCELLED', processed_at=timezone.localtime())
 
-        if existing_transaction and existing_transaction.status in ['PENDING', 'PROCESSING']:
-            existing_transaction.status = 'SUCCESS'
-            existing_transaction.amount_paid = amount_paid
-            existing_transaction.payment_method = serializer.validated_data['payment_method']
-            existing_transaction.payment_reference = serializer.validated_data.get('payment_reference', '')
-            existing_transaction.note = serializer.validated_data.get('note', '')
-            existing_transaction.processed_at = timezone.localtime()
-            existing_transaction.save()
-        else:
-            SalaryTransaction.objects.create(
-                salary_report=salary_report,
-                amount_paid=amount_paid,
-                payment_method=serializer.validated_data['payment_method'],
-                payment_reference=serializer.validated_data.get('payment_reference', ''),
-                note=serializer.validated_data.get('note', ''),
-                processed_at=timezone.localtime(),
-                status='SUCCESS',
-            )
+        SalaryTransaction.objects.create(
+            salary_report=salary_report,
+            amount_paid=amount_paid,
+            payment_method=serializer.validated_data['payment_method'],
+            payment_reference=serializer.validated_data.get('payment_reference', ''),
+            note=serializer.validated_data.get('note', ''),
+            processed_at=timezone.localtime(),
+            status='SUCCESS',
+        )
 
-        # Update SalaryReport totals
+        # Recompute SalaryReport totals from the full SUCCESS history.
         paid_amount = SalaryTransaction.objects.filter(
             salary_report=salary_report,
             status='SUCCESS'
-        ).aggregate(total=Sum('amount_paid'))['total'] or 0
+        ).aggregate(total=Sum('amount_paid'))['total'] or Decimal("0.00")
 
         salary_report.paid_amount = paid_amount
-        salary_report.remaining_payment = salary_report.total_payable_amount - paid_amount
-        salary_report.advance_amount += max(paid_amount - salary_report.total_payable_amount, 0)
+        if paid_amount >= salary_report.total_payable_amount:
+            salary_report.remaining_payment = Decimal("0.00")
+            salary_report.advance_amount = paid_amount - salary_report.total_payable_amount
+        else:
+            salary_report.remaining_payment = salary_report.total_payable_amount - paid_amount
+            salary_report.advance_amount = Decimal("0.00")
+
         salary_report.save(
             update_fields=['paid_amount', 'remaining_payment', 'advance_amount', 'updated_at']
         )

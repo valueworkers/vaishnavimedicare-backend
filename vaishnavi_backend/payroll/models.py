@@ -1,7 +1,7 @@
 from django.db import models
 from accounts.models import CustomUser
 from django.utils import timezone
-from django.db.models import Q, F,Sum
+from django.db.models import Q, F, Sum
 from decimal import Decimal
 from django.core.validators import MinValueValidator
 import uuid
@@ -22,15 +22,24 @@ class SalaryStructure(models.Model):
         ("ADVANCE", "Advance"),
         ("LOAN", "Loan"),
     ]
+    SALARY_MODE_CHOICES = [
+            ("BANK_TRANSFER", "Bank Transfer"),
+            ("UPI", "UPI"),
+            ("CASH", "Cash"),
+            ("CHECK", "Check"),
+            ("OTHER", "Other"),
+        ]
 
-    user = models.ForeignKey(CustomUser,on_delete=models.CASCADE,related_name="salary_structures",)
-    salary_type = models.CharField(max_length=20,choices=SALARY_TYPE_CHOICES,default="MONTHLY",)
-    change_type = models.CharField(max_length=20,choices=SALARY_CHANGE_TYPE,default="BASE_SALARY",)
-    
+    user = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name="salary_structures")
+    salary_type = models.CharField(max_length=20, choices=SALARY_TYPE_CHOICES, default="MONTHLY")
+    change_type = models.CharField(max_length=20, choices=SALARY_CHANGE_TYPE, default="BASE_SALARY")
+
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     pf_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     esi_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     final_salary = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+
+    salary_mode = models.CharField(max_length=20, choices=SALARY_MODE_CHOICES, default="BANK_TRANSFER")
 
     effective_from = models.DateField()
 
@@ -56,6 +65,11 @@ class SalaryReport(models.Model):
     """
     Salary calculation & payment breakdown report.
     Acts as an immutable audit record per salary period.
+
+    Sign convention:
+      - remaining_payment: amount still owed TO the employee (>= 0)
+      - advance_amount:    amount the employee was overpaid,
+                            carried forward as an advance (>= 0)
     """
 
     # -------------------- Relations --------------------
@@ -117,14 +131,13 @@ class SalaryReport(models.Model):
         decimal_places=2,
         default=Decimal("0.00")
     )
-        
+
     # -------------------- Meta --------------------
     class Meta:
         ordering = ["-start_date"]
         unique_together = ("user", "start_date", "end_date")
         verbose_name = "Salary Report"
         verbose_name_plural = "Salary Reports"
-        
 
     def __str__(self):
         return f"{self.user} | {self.start_date} → {self.end_date}"
