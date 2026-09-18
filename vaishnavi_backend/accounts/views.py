@@ -269,15 +269,15 @@ class EmployeeViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         qs = (
-            CustomUser.objects.employees()
+            CustomUser.objects
+            .employees()
             .filter(is_deleted=False)
             .select_related("employee_profile", "hierarchy", "hierarchy__parent")
         )
 
-        if user.is_superuser:
+        if user.is_superuser or user.is_owner:
             return qs
-        if user.is_owner:
-            return qs.filter(hierarchy__owner=user)
+        
         if user.is_manager:
             return qs.filter(
                 hierarchy__parent=user,

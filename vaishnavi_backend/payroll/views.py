@@ -22,7 +22,16 @@ class EmployeePayrollViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = EmployeePayrollListSerializer
     permission_classes = [IsAuthenticated]
 
-    filterset_fields = ["user_type"]
+    filterset_fields = [
+        "id",
+        "first_name",
+        "last_name",
+        "employee_profile__employee_id",
+        "email",
+        "mobile_number",
+        "employee_profile__category",
+        "employee_profile__vendor_name",        
+    ]
 
     search_fields = [
         "first_name",
@@ -34,6 +43,7 @@ class EmployeePayrollViewSet(viewsets.ReadOnlyModelViewSet):
     ]
 
     ordering_fields = [
+        "id",
         "first_name",
         "last_name",
         "basic_salary",
@@ -46,7 +56,7 @@ class EmployeePayrollViewSet(viewsets.ReadOnlyModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-
+        
         latest_salary = SalaryStructure.objects.filter(
             user=OuterRef("pk"),
         ).order_by("-effective_from", "-pk")
@@ -56,8 +66,11 @@ class EmployeePayrollViewSet(viewsets.ReadOnlyModelViewSet):
             status="SUCCESS",
         ).order_by("-processed_at", "-created_at")
 
+        print(CustomUser.objects.employees())
+
         base_qs = (
             CustomUser.objects
+            .employees().filter(is_deleted=False)
             .select_related("employee_profile")
             .annotate(
                 basic_salary=Subquery(latest_salary.values("final_salary")[:1]),
@@ -76,6 +89,7 @@ class EmployeePayrollViewSet(viewsets.ReadOnlyModelViewSet):
             queryset = base_qs.filter(id=user.id)
 
         return queryset
+    
 class SalaryStructureViewSet(viewsets.ModelViewSet):
     """
     ViewSet for managing salary structures
