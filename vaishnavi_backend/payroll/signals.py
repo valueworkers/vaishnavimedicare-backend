@@ -93,7 +93,7 @@ def rebuild_salary_chain(user):
             [
                 "pf_amount",
                 "esi_amount",
-                "final_salary",
+                "final_salary",   
             ],
         )
 

@@ -14,6 +14,7 @@ from django.shortcuts import get_object_or_404
 from django.db.models import Sum, OuterRef, Subquery
 from accounts.models import CustomUser
 from .permissions import CanViewSalaryReport
+from accounts.permissions import IsOwner
 
 class EmployeePayrollViewSet(viewsets.ReadOnlyModelViewSet):
     """
@@ -89,13 +90,13 @@ class EmployeePayrollViewSet(viewsets.ReadOnlyModelViewSet):
 
         return queryset
 
-class SalaryStructureViewSet(viewsets.ModelViewSet):
+class SalaryStructureViewSet(viewsets.ModelViewSet): 
     """
     ViewSet for managing salary structures
     """
 
     serializer_class = SalaryStructureSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated,IsOwner]
 
     filterset_fields = [
         "user_id",

@@ -44,7 +44,6 @@ class EmployeePayrollListSerializer(serializers.ModelSerializer):
             "effective_date",
         ]
 
-
 class SalaryStructureSerializer(serializers.ModelSerializer):
     """
     Serializer for SalaryStructure model with nested user data
