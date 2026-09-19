@@ -155,10 +155,9 @@ class AttendanceView(APIView):
 
     def _scoped_queryset(self, request):
         user = request.user
-        if user.is_superuser:
+        if user.is_superuser and user.is_owner:
             return Attendance.objects.all()
-        if user.is_owner:
-            return Attendance.objects.filter(user__hierarchy__owner=user)
+
         return Attendance.objects.filter(user=user)
 
     def get(self, request):

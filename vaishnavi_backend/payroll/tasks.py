@@ -18,8 +18,7 @@ def mark_attendance_present():
         return {"status": "error", "message": "Active PRESENT attendance status was not found."}
 
     today = date.today()
-    user_ids = list(CustomUser.objects.managers().values_list("id", flat=True))
-    user_ids += list(CustomUser.objects.staff().values_list("id", flat=True))
+    user_ids = CustomUser.objects.employees().values_list("id", flat=True)
     existing_ids = set(Attendance.objects.filter(user_id__in=user_ids, date=today).values_list("user_id", flat=True))
     new_records = [Attendance(user_id=user_id, date=today, status=present_status) for user_id in user_ids if user_id not in existing_ids]
     Attendance.objects.bulk_create(new_records, batch_size=5000)
