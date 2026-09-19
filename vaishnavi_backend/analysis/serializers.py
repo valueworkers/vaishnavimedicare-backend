@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from attendance.models import Attendance, AttendanceStatus
+from payroll.models import Attendance, AttendanceStatus
 from booking.models import TotalInvoice
 
 

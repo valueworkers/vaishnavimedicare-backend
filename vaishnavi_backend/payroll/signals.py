@@ -4,8 +4,8 @@ from django.db import transaction
 from django.db.models.signals import post_save, post_delete
 from django.dispatch import receiver
 
-from .models import SalaryStructure
-from .utils import SalaryCalculator
+from .models import Attendance, SalaryStructure
+from .utils import PayrollCalculator
 
 
 def calculate_gross_salary(
@@ -97,27 +97,19 @@ def rebuild_salary_chain(user):
             ],
         )
 
-def handle_salary_structure_change(instance):
-    """
-    Rebuild salary chain immediately.
-
-    Refresh salary reports after transaction commits.
-    """
-
-    user = instance.user
-
-    rebuild_salary_chain(user)
-
-    transaction.on_commit(
-        lambda: SalaryCalculator(user).refresh_salary_reports()
-    )
-
-
 @receiver(post_save, sender=SalaryStructure)
 def on_salary_structure_save(sender, instance, **kwargs):
-    handle_salary_structure_change(instance)
+    rebuild_salary_chain(instance.user)
+    transaction.on_commit(lambda: PayrollCalculator(instance.user).refresh_salary_reports())
 
 
 @receiver(post_delete, sender=SalaryStructure)
 def on_salary_structure_delete(sender, instance, **kwargs):
-    handle_salary_structure_change(instance)
+    rebuild_salary_chain(instance.user)
+    transaction.on_commit(lambda: PayrollCalculator(instance.user).refresh_salary_reports())
+
+
+@receiver((post_save, post_delete), sender=Attendance)
+def refresh_salary_reports_for_attendance(sender, instance, **kwargs):
+    """Attendance is payroll input, so keep persisted salary snapshots current."""
+    transaction.on_commit(lambda: PayrollCalculator(instance.user).refresh_salary_reports())

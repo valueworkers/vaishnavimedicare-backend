@@ -46,7 +46,6 @@ INSTALLED_APPS = [
     'accounts',
     'venue_manager',
     'booking',
-    "attendance",
     "payroll",
     "notification",
     "analysis",

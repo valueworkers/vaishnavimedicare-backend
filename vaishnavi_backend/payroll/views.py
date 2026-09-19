@@ -3,17 +3,16 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from .models import *
 from .serializers import *
-from .utils import SalaryCalculator
+from .utils import PayrollCalculator
+from .permissions import CanViewSalaryReport, IsOwnerOrReadOnly
 from rest_framework import viewsets, status
-from datetime import datetime, timedelta
+from datetime import datetime
 from rest_framework.views import APIView
-from dateutil.relativedelta import relativedelta
 from django.db import transaction as db_transaction
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
 from django.db.models import Sum, OuterRef, Subquery
 from accounts.models import CustomUser
-from .permissions import CanViewSalaryReport
 from accounts.permissions import IsOwner
 
 class EmployeePayrollViewSet(viewsets.ReadOnlyModelViewSet):
@@ -134,124 +133,103 @@ class SalaryStructureViewSet(viewsets.ModelViewSet):
         instance = serializer.save()
         instance.refresh_from_db()
 
-class SalaryReportAPIView(APIView):
-    """
-    Compute salary reports on-the-fly from attendance data.
+class AttendanceStatusViewSet(viewsets.ModelViewSet):
+    serializer_class = AttendanceStatusSerializer
+    permission_classes = [IsOwnerOrReadOnly]
 
-    GET /api/salary-reports/
-    GET /api/salary-reports/<id>/   -- looks up a persisted SalaryReport row
-                                        (written by SalaryCalculator.refresh_salary_reports)
+    def get_queryset(self):
+        user = self.request.user
+        global_statuses = AttendanceStatus.objects.filter(owner__is_superuser=True)
+        if user.is_superuser:
+            return AttendanceStatus.objects.all()
+        if user.is_owner:
+            return global_statuses | AttendanceStatus.objects.filter(owner=user)
+        owner_id = getattr(getattr(user, "hierarchy", None), "owner_id", None)
+        return global_statuses | AttendanceStatus.objects.filter(owner_id=owner_id)
 
-    Filters:
-    - Default: last 6 months
-    - ?year=YYYY
-    - ?start_date=YYYY-MM-DD
-    - ?end_date=YYYY-MM-DD
-    - ?user_id=123
-    """
+    def perform_create(self, serializer):
+        serializer.save(owner=self.request.user)
+
+class AttendanceView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def _scoped_queryset(self, request):
+        user = request.user
+        if user.is_superuser:
+            return Attendance.objects.all()
+        if user.is_owner:
+            return Attendance.objects.filter(user__hierarchy__owner=user)
+        return Attendance.objects.filter(user=user)
+
+    def get(self, request):
+        queryset = self._scoped_queryset(request)
+        for parameter, lookup in (("user_id", "user_id"), ("date", "date"), ("status", "status__code")):
+            if value := request.query_params.get(parameter):
+                queryset = queryset.filter(**{lookup: value})
+        if value := request.query_params.get("start_date"):
+            queryset = queryset.filter(date__gte=value)
+        if value := request.query_params.get("end_date"):
+            queryset = queryset.filter(date__lte=value)
+        queryset = queryset.select_related("user", "status")
+        return Response({"count": queryset.count(), "results": AttendanceSerializer(queryset, many=True).data})
+
+    def post(self, request):
+        user_id, attendance_date = request.data.get("user"), request.data.get("date")
+        if not user_id or not attendance_date:
+            return Response({"error": "user and date fields are required"}, status=status.HTTP_400_BAD_REQUEST)
+        attendance = self._scoped_queryset(request).filter(user_id=user_id, date=attendance_date).first()
+        if not attendance and not self._scoped_queryset(request).filter(user_id=user_id).exists():
+            return Response({"error": "You do not have permission to update this user's attendance."}, status=status.HTTP_403_FORBIDDEN)
+        serializer = AttendanceSerializer(attendance, data=request.data, partial=bool(attendance))
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(
+            {"message": "Attendance updated successfully" if attendance else "Attendance created successfully", "data": serializer.data},
+            status=status.HTTP_200_OK if attendance else status.HTTP_201_CREATED,
+        )
+
+class PayrollReportAPIView(APIView):
+    """Single on-the-fly attendance and salary report endpoint."""
 
     permission_classes = [CanViewSalaryReport]
 
-    def get(self, request, pk=None):
-        user = request.user
-        params = request.query_params
-
-        # ----- Single report retrieval by primary key -----
-        if pk:
-            report = get_object_or_404(SalaryReport.objects.select_related("user"), pk=pk)
-            self.check_object_permissions(request, report)
-
-            return Response(
-                self._format_report(report.user, {
-                    "start_date": report.start_date,
-                    "end_date": report.end_date,
-                    "final_salary": report.final_salary,
-                    "advance_amount": report.advance_amount,
-                    "total_payable_amount": report.total_payable_amount,
-                    "paid_amount": report.paid_amount,
-                    "remaining_payment": report.remaining_payment,
-                }),
-                status=status.HTTP_200_OK,
-            )
-
-        # Initialize default date range (6 months to end of current month)
-        today = datetime.now().date()
-        end_date = (today.replace(day=1) + relativedelta(months=1)) - timedelta(days=1)
-        start_date = (end_date - relativedelta(months=6)).replace(day=1)
-
-        # ----- Year filter (highest priority) -----
-        year = params.get("year")
-        if year:
-            try:
-                year = int(year)
-                start_date = datetime(year, 1, 1).date()
-                end_date = datetime(year, 12, 31).date()
-            except ValueError:
-                return Response(
-                    {'error': 'Invalid year format'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-
-        # ----- Custom date override -----
-        custom_start = params.get("start_date")
-        custom_end = params.get("end_date")
-
-        if custom_start or custom_end:
-            try:
-                if custom_start:
-                    start_date = datetime.strptime(custom_start, "%Y-%m-%d").date()
-                if custom_end:
-                    end_date = datetime.strptime(custom_end, "%Y-%m-%d").date()
-            except ValueError:
-                return Response(
-                    {'error': 'Invalid date format. Use YYYY-MM-DD'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-
-        # ----- User filter -----
-        user_id = params.get("user_id")
-
-        if user_id:
-            target_user = get_object_or_404(CustomUser, id=user_id)
-            self.check_object_permissions(request, target_user)
-            target_users = [target_user]
-        else:
-            # Determine which users we can see
-            if user.is_superuser:
-                target_users = CustomUser.objects.all()
-            elif user.is_owner:
-                target_users = CustomUser.objects.filter(hierarchy__owner=user)
-            else:
-                target_users = [user]
-
-        # ----- Build reports on the fly -----
+    def get(self, request):
+        try:
+            start_date = datetime.strptime(request.query_params.get("start_date"), "%Y-%m-%d").date() if request.query_params.get("start_date") else None
+            end_date = datetime.strptime(request.query_params.get("end_date"), "%Y-%m-%d").date() if request.query_params.get("end_date") else None
+        except ValueError:
+            return Response({"error": "Invalid date format. Use YYYY-MM-DD"}, status=status.HTTP_400_BAD_REQUEST)
+        if bool(start_date) != bool(end_date):
+            return Response({"error": "start_date and end_date must be supplied together"}, status=status.HTTP_400_BAD_REQUEST)
+        period_type = request.query_params.get("period_type", "MONTHLY").upper()
+        if period_type not in PayrollCalculator.PERIOD_TYPES:
+            return Response({"error": "Invalid period_type"}, status=status.HTTP_400_BAD_REQUEST)
+        target_users = self._target_users(request)
+        if isinstance(target_users, Response):
+            return target_users
         results = []
-        for target_user in target_users:
-            calc = SalaryCalculator(target_user)
-            salary_reports = calc.get_salary_reports_computed(
-                start_date=start_date,
-                end_date=end_date
-            )
+        for employee in target_users:
+            for report in PayrollCalculator(employee).reports(start_date, end_date, period_type):
+                results.append({
+                    "user": employee.id, "user_name": employee.get_full_name(),
+                    "start_date": report["start_date"], "end_date": report["end_date"],
+                    "attendance": report["attendance"],
+                    "salary": report["salary"],
+                })
+        return Response(sorted(results, key=lambda row: (row["start_date"], row["user"]), reverse=True))
 
-            for report in salary_reports:
-                results.append(self._format_report(target_user, report))
-
-        # Sort by start_date descending
-        results.sort(key=lambda r: r["start_date"], reverse=True)
-
-        return Response(results, status=status.HTTP_200_OK)
-
-    def _format_report(self, user, data):
-        return {
-            "user": user.id,
-            "start_date": data["start_date"],
-            "end_date": data["end_date"],
-            "final_salary": float(data["final_salary"]),
-            "advance_amount": float(data["advance_amount"]),
-            "total_payable_amount": float(data["total_payable_amount"]),
-            "paid_amount": float(data["paid_amount"]),
-            "remaining_payment": float(data["remaining_payment"]),
-        }
+    def _target_users(self, request):
+        requester, user_id = request.user, request.query_params.get("user_id")
+        if user_id:
+            employee = get_object_or_404(CustomUser, pk=user_id)
+            if not CanViewSalaryReport().has_object_permission(request, self, employee):
+                return Response({"error": "You do not have permission to view this report."}, status=status.HTTP_403_FORBIDDEN)
+            return [employee]
+        if requester.is_superuser:
+            return CustomUser.objects.employees()
+        if requester.is_owner:
+            return CustomUser.objects.filter(hierarchy__owner=requester)
+        return [requester]
 
 class SalaryTransactionViewSet(viewsets.ModelViewSet):
     serializer_class = SalaryTransactionSerializer

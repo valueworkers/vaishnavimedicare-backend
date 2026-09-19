@@ -1,5 +1,5 @@
 from accounts.models import CustomUser
-from attendance.models import Attendance
+from payroll.models import Attendance
 
 
 class PermissionScopeMixin:

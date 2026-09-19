@@ -2,7 +2,7 @@ import calendar
 from collections import defaultdict
 from decimal import Decimal, ROUND_HALF_UP
 from datetime import date
-from attendance.models import Attendance, AttendanceStatus
+from payroll.models import Attendance, AttendanceStatus
 from payroll.models import SalaryStructure, SalaryTransaction
 
 from django.db.models import (

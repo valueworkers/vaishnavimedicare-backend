@@ -1,7 +1,32 @@
 # serializers.py
 from rest_framework import serializers
-from .models import SalaryStructure, SalaryReport,SalaryTransaction
+from .models import Attendance, AttendanceStatus, SalaryStructure, SalaryReport, SalaryTransaction
 from accounts.models import CustomUser
+
+
+class AttendanceStatusSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AttendanceStatus
+        fields = "__all__"
+        read_only_fields = ["owner"]
+
+
+class AttendanceSerializer(serializers.ModelSerializer):
+    status_label = serializers.CharField(source="status.label", read_only=True)
+    status_code = serializers.CharField(source="status.code", read_only=True)
+
+    class Meta:
+        model = Attendance
+        fields = ["user", "date", "duration", "status", "status_label", "status_code", "reason"]
+
+    def validate(self, attrs):
+        user = attrs.get("user", getattr(self.instance, "user", None))
+        attendance_date = attrs.get("date", getattr(self.instance, "date", None))
+        if not self.instance and Attendance.objects.filter(user=user, date=attendance_date).exists():
+            raise serializers.ValidationError(
+                f"Attendance for {user.get_full_name()} on {attendance_date} already exists."
+            )
+        return attrs
 
 
 class EmployeePayrollListSerializer(serializers.ModelSerializer):
@@ -173,4 +198,3 @@ class SalaryTransactionCreateSerializer(serializers.Serializer):
         except SalaryReport.DoesNotExist:
             raise serializers.ValidationError("Salary report not found.")
         return value
-

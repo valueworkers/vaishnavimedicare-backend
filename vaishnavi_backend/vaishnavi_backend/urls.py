@@ -16,7 +16,6 @@ urlpatterns = [
     path('accounts/', include(('accounts.urls', 'accounts'), namespace='accounts')),
     path('management/', include(('venue_manager.urls', 'venue_manager'), namespace='venue_manager')),
     path('booking/', include(('booking.urls', 'booking'), namespace='booking')),
-    path('attendance/', include(('attendance.urls', 'attendance'), namespace='attendance')),
     path('payroll/', include(('payroll.urls', 'payroll'), namespace='payroll')),
     path('notifications/', include(('notification.urls', 'notifications'), namespace='notifications')),
     path('analysis/', include(('analysis.urls', 'analysis'), namespace='analysis')),

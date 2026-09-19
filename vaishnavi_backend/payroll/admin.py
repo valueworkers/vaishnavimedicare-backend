@@ -1,10 +1,28 @@
 from django.contrib import admin
 
 from .models import (
+    Attendance,
+    AttendanceStatus,
     SalaryStructure,
     SalaryReport,
     SalaryTransaction,
 )
+
+
+@admin.register(AttendanceStatus)
+class AttendanceStatusAdmin(admin.ModelAdmin):
+    list_display = ("owner", "label", "code", "is_active")
+    list_filter = ("owner", "is_active")
+    search_fields = ("label", "code", "owner__email")
+
+
+@admin.register(Attendance)
+class AttendanceAdmin(admin.ModelAdmin):
+    list_display = ("user", "date", "status", "duration", "created_at")
+    list_filter = ("status", "date")
+    search_fields = ("user__first_name", "user__last_name", "user__email")
+    list_select_related = ("user", "status")
+    autocomplete_fields = ("user",)
 
 
 # ============================================================

@@ -6,6 +6,62 @@ from decimal import Decimal
 from django.core.validators import MinValueValidator
 import uuid
 
+class AttendanceStatus(models.Model):
+    """A payroll-owned attendance status used when calculating pay."""
+
+    owner = models.ForeignKey(
+        CustomUser,
+        on_delete=models.CASCADE,
+        related_name="attendance_statuses",
+        limit_choices_to={"user_type": "VSRE_OWNER"},
+    )
+    code = models.CharField(max_length=20, unique=True)
+    label = models.CharField(max_length=50)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["label"]
+        verbose_name = "Attendance Status"
+        verbose_name_plural = "Attendance Statuses"
+
+    def __str__(self):
+        return f"{self.label} ({self.code})"
+
+class Attendance(models.Model):
+    """Daily attendance input used by payroll calculations."""
+
+    user = models.ForeignKey(
+        CustomUser,
+        on_delete=models.CASCADE,
+        related_name="attendance",
+        limit_choices_to={"user_type__in": ["VSRE_MANAGER", "LINE_MANAGER", "VSRE_STAFF"]},
+    )
+    date = models.DateField(default=timezone.now)
+    duration = models.DurationField(null=True, blank=True)
+    status = models.ForeignKey(
+        AttendanceStatus,
+        on_delete=models.PROTECT,
+        related_name="attendance_records",
+    )
+    reason = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-date"]
+        verbose_name = "Attendance"
+        verbose_name_plural = "Attendance"
+        constraints = [
+            models.UniqueConstraint(fields=["user", "date"], name="payroll_attendance_user_date_unique"),
+        ]
+        indexes = [
+            models.Index(fields=["user", "date"]),
+            models.Index(fields=["user", "-date"]),
+        ]
+
+    def __str__(self):
+        return f"{self.user.get_full_name()} - {self.date} ({self.status.label})"
+
 class SalaryStructure(models.Model):
 
     SALARY_TYPE_CHOICES = [

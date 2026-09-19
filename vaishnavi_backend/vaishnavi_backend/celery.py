@@ -18,7 +18,7 @@ app.conf.beat_schedule = {
         'schedule': crontab(hour=8, minute=0),
     },
     'mark-attendance-present': {
-        'task': 'attendance.tasks.mark_attendance_present',
+        'task': 'payroll.tasks.mark_attendance_present',
         'schedule': crontab(hour=0, minute=0), 
     },
     'update-booking-status': {

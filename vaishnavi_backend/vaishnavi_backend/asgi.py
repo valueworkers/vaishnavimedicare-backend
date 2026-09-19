@@ -11,12 +11,12 @@ django_asgi_app = get_asgi_application()
 from channels.routing import ProtocolTypeRouter, URLRouter
 from channels.auth import AuthMiddlewareStack
 from notification.routing import notification_websocket_urlpatterns
-from attendance.routing import attendance_websocket_urlpatterns
+from payroll.routing import payroll_websocket_urlpatterns
 
 # Step 3: Combine all websocket routes
 websocket_urlpatterns = (
     notification_websocket_urlpatterns +
-    attendance_websocket_urlpatterns
+    payroll_websocket_urlpatterns
 )
 
 # Step 4: Define application

@@ -8,10 +8,10 @@ router = DefaultRouter()
 router.register(r'employee-payroll', views.EmployeePayrollViewSet, basename='emp-payroll-list')
 router.register(r'salary-structures', views.SalaryStructureViewSet, basename='salary-structure')
 router.register(r'salary-transactions', views.SalaryTransactionViewSet, basename='salary-transaction')
+router.register(r'attendance-status', views.AttendanceStatusViewSet, basename='attendance-status')
 
 urlpatterns = [
-    # Salary Structure endpoints
     path('', include(router.urls)),
-    path("salary-report/", views.SalaryReportAPIView.as_view(),name="salary-report-list"),
-    path("salary-report/<int:pk>/", views.SalaryReportAPIView.as_view(),name="salary-report-detail"),
+    path("attendance/", views.AttendanceView.as_view(), name="attendance"),
+    path("reports/", views.PayrollReportAPIView.as_view(), name="payroll-reports"),
 ]

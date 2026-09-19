@@ -8,7 +8,7 @@ Eventroop is a multi-tenant SaaS platform supporting two primary domains:
 - **valueoccasions.com** — Event and venue booking management
 - **vaishnavimedicare.com** — Healthcare service booking
 
-It provides end-to-end management including venue listings, complex order workflows, attendance tracking, payroll, multi-channel notifications, invoicing, and a customer wallet system.
+It provides end-to-end management including venue listings, complex order workflows, payroll with attendance tracking, multi-channel notifications, invoicing, and a customer wallet system.
 
 ---
 
@@ -57,7 +57,6 @@ vaishnavi_backend/
 ├── accounts/               # User auth, registration, OTP, permissions
 ├── venue_manager/          # Venue and service CRUD
 ├── booking/                # Order system, patients, invoices, payments
-├── attendance/             # Attendance tracking + WebSocket consumer
 ├── payroll/                # Salary structures and transactions
 ├── notification/           # Multi-channel notification system + WebSocket
 ├── analysis/               # Analytics and reporting endpoints
@@ -208,13 +207,13 @@ FCM_API_KEY=your-firebase-key
 | POST | `/booking/patients/` | Register patient |
 | POST | `/booking/location/` | Add location |
 
-### Attendance — `/attendance/`
+### Payroll attendance and reports — `/payroll/`
 
 | Method | Endpoint | Description |
 |---|---|---|
-| POST | `/attendance/attendance/` | Mark attendance |
-| GET | `/attendance/total-attendance/` | Attendance report |
-| GET | `/attendance/attendance-status/` | Attendance statuses |
+| POST | `/payroll/attendance/` | Mark attendance |
+| GET | `/payroll/reports/` | Combined attendance and salary report |
+| GET | `/payroll/attendance-status/` | Attendance statuses |
 | WS | `/ws/attendance/` | Real-time attendance WebSocket |
 
 ### Payroll — `/payroll/`
@@ -262,7 +261,7 @@ FCM_API_KEY=your-firebase-key
 | Every 5 minutes | `booking.tasks.update_statuses_by_time` | Auto-update order statuses |
 | 8:00 AM daily | `notifications.tasks.send_daily_digest` | Send daily notification digest |
 | 11:30 PM daily | `booking.tasks.trigger_auto_continue_secondary_orders` | Auto-continue recurring orders |
-| Midnight daily | `attendance.tasks.mark_attendance_present` | Auto-mark attendance |
+| Midnight daily | `payroll.tasks.mark_attendance_present` | Auto-mark attendance |
 
 ---
 
