@@ -70,7 +70,7 @@ class EmployeePayrollViewSet(viewsets.ReadOnlyModelViewSet):
 
         base_qs = (
             CustomUser.objects
-            .employees().filter(is_deleted=False)
+            .employees()
             .select_related("employee_profile")
             .annotate(
                 basic_salary=Subquery(latest_salary.values("final_salary")[:1]),
