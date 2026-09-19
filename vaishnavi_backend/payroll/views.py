@@ -15,6 +15,14 @@ from django.db.models import Sum, OuterRef, Subquery
 from accounts.models import CustomUser
 from accounts.permissions import IsOwner
 
+from rest_framework.pagination import CursorPagination
+
+
+class AttendanceCursorPagination(CursorPagination):
+    page_size = 25
+    ordering = ("-date", "id")   # tuple → DRF appends `id` as the tiebreaker
+    cursor_query_param = "cursor"
+
 class EmployeePayrollViewSet(viewsets.ReadOnlyModelViewSet):
     """
     Read-only payroll summary list, scoped by the same hierarchy rules
@@ -152,12 +160,12 @@ class AttendanceStatusViewSet(viewsets.ModelViewSet):
 
 class AttendanceView(APIView):
     permission_classes = [IsAuthenticated]
+    pagination_class = AttendanceCursorPagination
 
     def _scoped_queryset(self, request):
         user = request.user
         if user.is_superuser and user.is_owner:
             return Attendance.objects.all()
-
         return Attendance.objects.filter(user=user)
 
     def get(self, request):
@@ -169,16 +177,21 @@ class AttendanceView(APIView):
             queryset = queryset.filter(date__gte=value)
         if value := request.query_params.get("end_date"):
             queryset = queryset.filter(date__lte=value)
-        queryset = queryset.select_related("user", "status")
-        return Response({"count": queryset.count(), "results": AttendanceSerializer(queryset, many=True).data})
+        queryset = queryset.select_related("user", "status").order_by("-date", "id")
+
+        paginator = self.pagination_class()
+        page = paginator.paginate_queryset(queryset, request, view=self)
+        serializer = AttendanceSerializer(page, many=True)
+        return paginator.get_paginated_response(serializer.data)
 
     def post(self, request):
         user_id, attendance_date = request.data.get("user"), request.data.get("date")
         if not user_id or not attendance_date:
             return Response({"error": "user and date fields are required"}, status=status.HTTP_400_BAD_REQUEST)
-        attendance = self._scoped_queryset(request).filter(user_id=user_id, date=attendance_date).first()
-        if not attendance and not self._scoped_queryset(request).filter(user_id=user_id).exists():
-            return Response({"error": "You do not have permission to update this user's attendance."}, status=status.HTTP_403_FORBIDDEN)
+
+        attendance = Attendance.objects.select_related("user", "status").filter(
+            user_id=user_id, date=attendance_date
+        ).first()
         serializer = AttendanceSerializer(attendance, data=request.data, partial=bool(attendance))
         serializer.is_valid(raise_exception=True)
         serializer.save()
@@ -186,7 +199,7 @@ class AttendanceView(APIView):
             {"message": "Attendance updated successfully" if attendance else "Attendance created successfully", "data": serializer.data},
             status=status.HTTP_200_OK if attendance else status.HTTP_201_CREATED,
         )
-
+    
 class PayrollReportAPIView(APIView):
     """Single on-the-fly attendance and salary report endpoint."""
 
