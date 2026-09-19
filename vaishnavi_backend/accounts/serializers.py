@@ -55,7 +55,8 @@ class BaseUserSerializer(serializers.ModelSerializer):
             "user_type",
             "age",
             "gender",
-            "address",
+            "permanent_address",
+            "current_address",
             "city",
             "date_joined",
             "is_active",
@@ -64,7 +65,7 @@ class BaseUserSerializer(serializers.ModelSerializer):
             "password",
             "confirm_password",
         ]
-        read_only_fields = ["id", "user_type", "created_by"]
+        read_only_fields = ["id", "created_by"]
  
     # ---------------------- validation ----------------------
     def validate_email(self, value):
@@ -344,24 +345,22 @@ class ShiftScheduleSerializer(serializers.ModelSerializer):
 # ----------------------- Employee Serializer ---------------
 class EmployeeProfileSerializer(serializers.ModelSerializer):
     shift_detail = ShiftScheduleSerializer(source="shift", read_only=True)
- 
+
     class Meta:
         model = EmployeeProfile
         fields = [
             "employee_id",
             "category",
             "designation",
-            "status",
             "grade",
             "cost_center",
             "department",
-            "permanent_address",
-            "current_address",
             "rehired_status",
             "vendor_name",
             "vendor_phone",
-            "date_joined",
             "last_working_day",
+            "termination_type",
+            "termination_reason",
             "order_types",
             "skills",
             "target_percent",
@@ -376,13 +375,18 @@ class EmployeeProfileSerializer(serializers.ModelSerializer):
             "shift_detail",
             "shift_effective_from",
         ]
-        extra_kwargs = {"shift": {"write_only": True, "required": False}}
- 
+        extra_kwargs = {
+            "shift": {"write_only": True, "required": False},
+            "last_working_day": {"read_only": True},
+            "termination_type": {"read_only": True},
+            "termination_reason": {"read_only": True},
+        }
+
     def validate(self, data):
         get = lambda field, default=None: data.get(
             field, getattr(self.instance, field, default)
         )
- 
+
         category = get("category")
         if category != EmployeeProfile.EmployeeCategory.VENDOR and (
             get("vendor_name") or get("vendor_phone")
@@ -390,29 +394,24 @@ class EmployeeProfileSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {"vendor_name": "Vendor details apply only to the VENDOR category."}
             )
- 
-        joined, last_day = get("date_joined"), get("last_working_day")
-        if joined and last_day and last_day < joined:
-            raise serializers.ValidationError(
-                {"last_working_day": "Last working day cannot precede the joining date."}
-            )
- 
+
         if get("pf_applicable", False) and not (get("pf_number") or get("uan_number")):
             raise serializers.ValidationError(
                 {"pf_number": "PF number or UAN is required when PF is applicable."}
             )
- 
+
         if get("esi_applicable", False) and not get("esi_number"):
             raise serializers.ValidationError(
                 {"esi_number": "ESI number is required when ESI is applicable."}
             )
- 
-        if get("status") == EmployeeProfile.Status.TERMINATED and not last_day:
-            raise serializers.ValidationError(
-                {"last_working_day": "LWD is required when status is Terminated."}
-            )
-        return data
- 
+
+        return data 
+
+class EmployeeTerminationSerializer(serializers.Serializer):
+    termination_type = serializers.ChoiceField(choices=EmployeeProfile.TerminationType.choices)
+    reason = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    last_working_day = serializers.DateField(required=False)
+
 class ReportsToMixin:
     """Shared `reports_to` resolution for employee-facing serializers."""
  
@@ -511,7 +510,8 @@ class EmployeeListSerializer(ReportsToMixin, AssignmentsMixin, serializers.Model
             "user_type",
             "age",
             "gender",
-            "address",
+            "permanent_address",
+            "current_address",
             "city",
             "date_joined",
             "is_active",

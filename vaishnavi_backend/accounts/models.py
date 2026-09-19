@@ -1,4 +1,4 @@
-from django.db import models
+from django.db import models, transaction
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
 from django.utils import timezone
 from django.core.validators import RegexValidator
@@ -172,18 +172,16 @@ class CustomUser(AbstractBaseUser, PermissionsMixin):
     user_type = models.CharField(
         max_length=30, choices=UserTypes.choices, verbose_name="Emp Role"
     )
-    # Kept for backward compatibility with existing callers; new records
-    # should use EmployeeProfile.permanent_address / current_address.
-    address = models.TextField()
+
+    permanent_address = models.TextField(blank=True, null=True)
+    current_address = models.TextField(blank=True, null=True)
+    
     city = models.CharField(max_length=100, db_index=True)
  
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
     is_deleted = models.BooleanField(default=False)
  
-    # Account/onboarding date — applies to every user_type (owner, employee,
-    # customer). Distinct from EmployeeProfile.date_joined, which is the
-    # employment start date and only exists for managers/staff.
     date_joined = models.DateField(blank=True, null=True)
  
     created_by = models.ForeignKey(
@@ -291,7 +289,11 @@ class ShiftSchedule(models.Model):
 # ------------------------EMPLOYEE PROFILE-----------------------------
 class EmployeeProfile(models.Model):
     """Employment record for managers and staff."""
- 
+
+    class TerminationType(models.TextChoices):
+        VOLUNTARY = "VOLUNTARY", "Voluntary"       # resignation, retirement
+        INVOLUNTARY = "INVOLUNTARY", "Involuntary"  # dismissal, layoff, contract end
+
     class EmployeeCategory(models.TextChoices):
         REGULAR = "REGULAR", "Regular"
         FULLTIME = "FULLTIME", "Fulltime"
@@ -299,11 +301,6 @@ class EmployeeProfile(models.Model):
         VIRTUAL = "VIRTUAL", "Virtual"
         PPO = "PPO", "PPO"
         VENDOR = "VENDOR", "Vendor"
- 
-    class Status(models.TextChoices):
-        ACTIVE = "ACTIVE", "Active"
-        INACTIVE = "INACTIVE", "Inactive"
-        TERMINATED = "TERMINATED", "Terminated"
  
     class RehiredStatus(models.TextChoices):
         YES = "YES", "Yes"
@@ -321,17 +318,20 @@ class EmployeeProfile(models.Model):
         on_delete=models.CASCADE,
         related_name="employee_profile",
     )
+
+    termination_type = models.CharField(
+        max_length=20, choices=TerminationType.choices, blank=True, null=True
+    )
+    termination_reason = models.CharField(max_length=255, blank=True, null=True)
  
-    employee_id = models.CharField(max_length=20, unique=True, blank=True, null=True)
+    employee_id = models.CharField(max_length=20, blank=True, null=True)
     category = models.CharField(
         max_length=50, choices=EmployeeCategory.choices, null=True, blank=True
     )
     designation = models.CharField(
         max_length=100, blank=True, null=True, help_text="Job title, e.g. 'Senior Technician'."
     )
-    status = models.CharField(
-        max_length=20, choices=Status.choices, default=Status.ACTIVE
-    )
+
     grade = models.CharField(max_length=20, blank=True, null=True)
     cost_center = models.CharField(max_length=50, blank=True, null=True)
     department = models.CharField(
@@ -339,8 +339,7 @@ class EmployeeProfile(models.Model):
         help_text="Employee's HR department. Distinct from UserHierarchy.department, "
                    "which reflects org reporting structure.",
     )
-    permanent_address = models.TextField(blank=True, null=True)
-    current_address = models.TextField(blank=True, null=True)
+    
     rehired_status = models.CharField(
         max_length=3, choices=RehiredStatus.choices, default=RehiredStatus.NO
     )
@@ -349,7 +348,6 @@ class EmployeeProfile(models.Model):
     vendor_name = models.CharField(max_length=120, blank=True, null=True)
     vendor_phone = models.CharField(max_length=15, blank=True, null=True)
  
-    date_joined = models.DateField(blank=True, null=True, verbose_name="DOJ")
     last_working_day = models.DateField(blank=True, null=True, verbose_name="LWD")
  
     order_types = models.JSONField(blank=True, null=True)
@@ -411,23 +409,98 @@ class EmployeeProfile(models.Model):
             raise ValidationError(
                 {"esi_number": "ESI number is required when ESI is applicable."}
             )
-        if self.status == self.Status.TERMINATED and not self.last_working_day:
+
+        # termination_type is the source of truth for "terminated or not"
+        if self.termination_type and not self.last_working_day:
             raise ValidationError(
-                {"last_working_day": "LWD is required when status is Terminated."}
+                {"last_working_day": "LWD is required when a termination type is set."}
             )
+        if self.last_working_day and not self.termination_type:
+            raise ValidationError(
+                {"termination_type": "Termination type is required when LWD is set."}
+            )
+        if self.termination_reason and not self.termination_type:
+            raise ValidationError(
+                {"termination_reason": "Termination reason requires a termination type."}
+            )
+
         if (
-            self.date_joined
+            self.user.date_joined
             and self.last_working_day
-            and self.last_working_day < self.date_joined
+            and self.last_working_day < self.user.date_joined
         ):
             raise ValidationError(
                 {"last_working_day": "Last working day cannot precede the joining date."}
             )
- 
+
     @property
     def is_currently_employed(self):
-        return self.last_working_day is None
- 
+        return not self.termination_type
+
+    @transaction.atomic
+    def terminate(
+        self,
+        termination_type,
+        reason=None,
+        last_working_day=None
+    ):
+        """
+        Mark this employee as terminated.
+
+        termination_type: EmployeeProfile.TerminationType.VOLUNTARY / INVOLUNTARY
+        reason: optional free text / choice, e.g. "Resignation", "Layoff"
+        last_working_day: defaults to today if not given
+        """
+        if self.termination_type:
+            raise ValidationError({"terminate":"Employee is already marked as terminated."})
+
+        self.termination_type = termination_type
+        self.termination_reason = reason
+        self.last_working_day = last_working_day or timezone.now().date()
+        self.user.is_deleted = True 
+
+        self.full_clean()
+        self.save(update_fields=[
+            "termination_type",
+            "termination_reason",
+            "last_working_day",
+            "updated_at",
+        ])
+
+        self.user.is_active = False
+        self.user.is_deleted = True
+        self.user.save(update_fields=["is_active","is_deleted"])
+
+        return self
+
+    @transaction.atomic
+    def termination_revoke(self):
+        """
+        Reverse a termination — e.g. rehire, or a termination entered in error.
+        """
+        if not self.termination_type:
+            raise ValidationError({"termination_revoke":"Employee is not currently terminated."})
+
+        self.termination_type = None
+        self.termination_reason = None
+        self.last_working_day = None
+
+        self.full_clean()
+        self.save(update_fields=[
+            "termination_type",
+            "termination_reason",
+            "last_working_day",
+            "updated_at",
+        ])
+
+    
+        self.user.is_active = True
+        self.user.is_deleted = False
+        self.user.save(using=self.user._state.db) if False else None
+        self.user.save(update_fields=["is_active","is_deleted"])
+
+        return self
+    
     def __str__(self):
         return f"{self.employee_id or self.user_id} — {self.user.get_full_name()}"
     

@@ -98,15 +98,12 @@ class CanManageEmployees(BasePermission):
 
     def has_object_permission(self, request, view, obj):
         user = request.user
-        if user.is_superuser:
+        if user.is_superuser or user.is_owner:
             return True
 
         hierarchy = getattr(obj, "hierarchy", None)
         if hierarchy is None:
             return False
-
-        if user.is_owner:
-            return hierarchy.owner_id == user.id
 
         if user.is_manager:
             return (

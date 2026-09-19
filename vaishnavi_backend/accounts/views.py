@@ -2,6 +2,7 @@
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
 from django.contrib.auth.hashers import check_password 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import viewsets,generics,status
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.views import APIView
@@ -247,9 +248,9 @@ class EmployeeViewSet(viewsets.ModelViewSet):
         "is_active": ["exact"],
         "city": ["exact", "icontains"],
         "user_type": ["exact", "in"],
+        "date_joined": ["gte", "lte"],
         "employee_profile__category": ["exact", "in"],
-        "employee_profile__status": ["exact", "in"],
-        "employee_profile__date_joined": ["gte", "lte"],
+        "employee_profile__termination_type": ["exact", "in", "isnull"],
     }
     search_fields = [
         "first_name",
@@ -257,9 +258,9 @@ class EmployeeViewSet(viewsets.ModelViewSet):
         "last_name",
         "=mobile_number",
         "=email",
-        "=employee_profile__employee_id"
+        "=employee_profile__employee_id",
     ]
-    ordering_fields = ["id", "first_name", "last_name", "employee_profile__date_joined"]
+    ordering_fields = ["id", "first_name", "last_name", "date_joined"]
     ordering = ["id"]
 
     MANAGER_TYPES = [CustomUser.UserTypes.VSRE_MANAGER, CustomUser.UserTypes.LINE_MANAGER]
@@ -270,8 +271,7 @@ class EmployeeViewSet(viewsets.ModelViewSet):
         user = self.request.user
         qs = (
             CustomUser.objects
-            .employees()
-            .filter(is_deleted=False)
+            .employees()            
             .select_related("employee_profile", "hierarchy", "hierarchy__parent")
         )
 
@@ -323,10 +323,35 @@ class EmployeeViewSet(viewsets.ModelViewSet):
         serializer.save()
 
     def perform_destroy(self, instance):
-        if hasattr(instance, "soft_delete"):
-            instance.soft_delete()
-        else:
-            instance.delete()
+        profile = getattr(instance, "employee_profile", None)
+
+        serializer = EmployeeTerminationSerializer(data=self.request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        try:
+            profile.terminate(
+                termination_type=data["termination_type"],
+                reason=data.get("reason"),
+                last_working_day=data.get("last_working_day"),
+            )
+        except DjangoValidationError as e:
+            raise ValidationError(e.message_dict)
+
+    @action(detail=True, methods=["post"], url_path="termination-revoke")
+    def termination_revoke(self, request, pk=None):
+        employee = self.get_object()
+        profile = getattr(employee, "employee_profile", None)
+        try:
+            profile.termination_revoke()
+        except DjangoValidationError as e:
+            raise ValidationError(e.message_dict)
+
+        employee.refresh_from_db()
+        return Response(
+            EmployeeListSerializer(employee, context=self.get_serializer_context()).data
+        )
+
 
 class CustomerViewSet(viewsets.ModelViewSet):
     """
