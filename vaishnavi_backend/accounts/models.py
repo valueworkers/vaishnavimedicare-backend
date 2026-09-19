@@ -474,7 +474,7 @@ class EmployeeProfile(models.Model):
         return self
 
     @transaction.atomic
-    def termination_revoke(self):
+    def termination_revoke(self,rehired_status=False):
         """
         Reverse a termination — e.g. rehire, or a termination entered in error.
         """
@@ -485,11 +485,14 @@ class EmployeeProfile(models.Model):
         self.termination_reason = None
         self.last_working_day = None
 
+        self.rehired_status = self.RehiredStatus.YES if rehired_status else self.RehiredStatus.NO
+
         self.full_clean()
         self.save(update_fields=[
             "termination_type",
             "termination_reason",
             "last_working_day",
+            "rehired_status",
             "updated_at",
         ])
 

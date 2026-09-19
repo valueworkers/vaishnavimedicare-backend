@@ -342,8 +342,9 @@ class EmployeeViewSet(viewsets.ModelViewSet):
     def termination_revoke(self, request, pk=None):
         employee = self.get_object()
         profile = getattr(employee, "employee_profile", None)
+        rehired_status = request.data.get("rehired_status",False)
         try:
-            profile.termination_revoke()
+            profile.termination_revoke(rehired_status)
         except DjangoValidationError as e:
             raise ValidationError(e.message_dict)
 
