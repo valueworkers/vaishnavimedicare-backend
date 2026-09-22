@@ -262,10 +262,10 @@ class SalaryReportViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, view
     """
     Read-only access to the persisted SalaryReport table.
 
-    GET  /salary-reports/?user_id=5&start_date=2026-04-01&end_date=2026-09-30&is_finalized=false
-    GET  /salary-reports/<id>/
-    POST /salary-reports/refresh/            body: {"user_id": 5}
-    POST /salary-reports/<id>/finalize/       -- locks that one report
+    GET  /reports/?user_id=5&start_date=2026-04-01&end_date=2026-09-30&is_finalized=false
+    GET  /reports/<id>/
+    POST /reports/refresh/            body: {"user_id": 5}
+    POST /reports/<id>/finalize/       -- locks that one report
     """
 
     serializer_class = SalaryReportSerializer

@@ -19,7 +19,7 @@ def mark_attendance_present():
         return {"status": "error", "message": "Active PRESENT attendance status was not found."}
 
     today = date.today()
-    user_ids = CustomUser.objects.employees().values_list("id", flat=True)
+    user_ids = CustomUser.objects.employees().filter(is_deleted=False).values_list("id", flat=True)
     existing_ids = set(Attendance.objects.filter(user_id__in=user_ids, date=today).values_list("user_id", flat=True))
     new_records = [Attendance(user_id=user_id, date=today, status=present_status) for user_id in user_ids if user_id not in existing_ids]
     Attendance.objects.bulk_create(new_records, batch_size=5000)
@@ -49,6 +49,7 @@ def refresh_salary_reports_task(self, user_id):
         return
     try:
         PayrollCalculator(user).refresh_salary_reports()
+        return {"status": "success", "message": f"Salary reports updated successfully for user {user.id}."}
     except Exception as exc:
         raise self.retry(exc=exc)
 
