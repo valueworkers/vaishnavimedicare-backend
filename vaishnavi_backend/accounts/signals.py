@@ -1,4 +1,4 @@
-from django.db.models.signals import post_save, post_migrate
+from django.db.models.signals import post_save,pre_save, post_migrate
 from django.core.management import call_command
 from django.contrib.auth.models import Group
 from django.dispatch import receiver
@@ -29,34 +29,30 @@ def assign_group_to_user(sender, instance, created, **kwargs):
 # ---------------------------
 # Auto-create Groups after Migration
 # ---------------------------
-# @receiver(post_migrate)
-# def create_default_groups_after_migration(sender, **kwargs):
-#     """Automatically run group creation after migrations."""
-#     if sender.name != "accounts":
-#         return
-#     print("Running post_migrate: creating default groups and permissions...")
-#     call_command("create_default_groups")
+@receiver(post_migrate)
+def create_default_groups_after_migration(sender, **kwargs):
+    """Automatically run group creation after migrations."""
+    if sender.name != "accounts":
+        return
+    print("Running post_migrate: creating default groups and permissions...")
+    call_command("create_default_groups")
 
 
 # ---------------------------
 # Auto generate Employee Id 
 # ---------------------------
 
-
-@receiver(post_save, sender=EmployeeProfile)
-def generate_employee_id(sender, instance, created, **kwargs):
+@receiver(pre_save, sender=EmployeeProfile)
+def generate_employee_id(sender, instance, **kwargs):
     """
-    Generate employee ID when EmployeeProfile is created.
+    Generate employee_id before EmployeeProfile is saved.
 
-    Works for existing CustomUser records.
     Does not overwrite an existing employee_id.
     """
 
-    # Only generate on creation
-    
-    # # Do not overwrite existing employee_id
-    # if instance.employee_id is not None or instance.employee_id!="":
-    #     return
+    # Do not overwrite existing employee_id
+    if instance.employee_id:
+        return
 
     prefix_map = {
         "VSRE_MANAGER": "M",
@@ -72,15 +68,4 @@ def generate_employee_id(sender, instance, created, **kwargs):
 
     year = timezone.now().year
 
-    employee_id = f"{prefix}{year}{instance.user_id:04d}"
-
-    # Use update to avoid triggering post_save again
-   
-    emp = sender.objects.filter(
-        Q(employee_id__isnull=True) | Q(employee_id=""),
-        pk=instance.pk,
-    )
-
-    emp.update(
-        employee_id=employee_id
-    )
+    instance.employee_id = f"{prefix}{year}{instance.user_id:04d}"
