@@ -1,19 +1,20 @@
 from decimal import Decimal
+from rest_framework import mixins, viewsets, status
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.views import APIView
+from rest_framework.decorators import action
 from .models import *
 from .serializers import *
-from .utils import PayrollCalculator
 from .permissions import CanViewSalaryReport, IsOwnerOrReadOnly
-from rest_framework import viewsets, status
 from datetime import datetime
-from rest_framework.views import APIView
 from django.db import transaction as db_transaction
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
 from django.db.models import Sum, OuterRef, Subquery
 from accounts.models import CustomUser
 from accounts.permissions import IsOwner
+from .tasks import queue_salary_report_refresh
 
 from rest_framework.pagination import CursorPagination
 
@@ -257,61 +258,50 @@ class AttendanceView(APIView):
                 )
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-class PayrollReportAPIView(APIView):
-    """Single on-the-fly attendance and salary report endpoint."""
+class PayrollReportAPIView(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
+    """
+    Read-only access to the persisted SalaryReport table (the rows the task
+    writes to), plus a `refresh` action to manually re-queue that same task
+    for a user -- no need to touch Attendance/SalaryStructure just to force
+    a recompute.
 
+    GET  /reports/?user_id=5&start_date=2026-04-01&end_date=2026-09-30
+    GET  /reports/<id>/
+    POST /reports/refresh/          body: {"user_id": 5}
+    """
+
+    serializer_class = SalaryReportSerializer
     permission_classes = [CanViewSalaryReport]
 
-    def get(self, request):
-        try:
-            start_date = (
-                datetime.strptime(request.query_params.get("start_date"), "%Y-%m-%d").date()
-                if request.query_params.get("start_date") else None
-            )
-            end_date = (
-                datetime.strptime(request.query_params.get("end_date"), "%Y-%m-%d").date()
-                if request.query_params.get("end_date") else None
-            )
-        except ValueError:
-            return Response({"error": "Invalid date format. Use YYYY-MM-DD"}, status=status.HTTP_400_BAD_REQUEST)
+    def get_queryset(self):
+        user = self.request.user
+        qs = SalaryReport.objects.all() if (user.is_superuser or user.is_owner) else SalaryReport.objects.filter(user=user)
 
-        if bool(start_date) != bool(end_date):
-            return Response(
-                {"error": "start_date and end_date must be supplied together"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        period_type = request.query_params.get("period_type", "MONTHLY").upper()
-        if period_type not in PayrollCalculator.PERIOD_TYPES:
-            return Response({"error": "Invalid period_type"}, status=status.HTTP_400_BAD_REQUEST)
-
-        target_users = self._target_users(request)
-        if isinstance(target_users, Response):
-            return target_users
-
-        results = [
-            row
-            for employee in target_users
-            for row in PayrollCalculator(employee).reports(start_date, end_date, period_type)
-        ]
-        results.sort(key=lambda row: (row["start_date"], row["user"].pk), reverse=True)
-
-        serializer = PayrollReportRowSerializer(results, many=True)
-        return Response(serializer.data)
-
-    def _target_users(self, request):
-        requester, user_id = request.user, request.query_params.get("user_id")
+        user_id = self.request.query_params.get("user_id")
         if user_id:
-            employee = get_object_or_404(CustomUser, pk=user_id)
-            if not CanViewSalaryReport().has_object_permission(request, self, employee):
-                return Response(
-                    {"error": "You do not have permission to view this report."},
-                    status=status.HTTP_403_FORBIDDEN,
-                )
-            return [employee]
-        if requester.is_superuser or requester.is_owner:
-            return CustomUser.objects.employees()
-        return [requester]
+            qs = qs.filter(user_id=user_id)
+
+        start_date = self.request.query_params.get("start_date")
+        end_date = self.request.query_params.get("end_date")
+        if start_date:
+            qs = qs.filter(start_date__gte=start_date)
+        if end_date:
+            qs = qs.filter(end_date__lte=end_date)
+
+        return qs.select_related("user").order_by("-start_date")
+
+    @action(detail=False, methods=["post"])
+    def refresh(self, request):
+        """Manually trigger the same task the signals fire -- for support/debug use."""
+        user_id = request.data.get("user_id")
+        if not user_id:
+            return Response({"error": "user_id is required"}, status=400)
+
+        if not (request.user.is_superuser or request.user.is_owner or str(request.user.id) == str(user_id)):
+            return Response({"detail": "You do not have permission to refresh this user's reports."}, status=403)
+
+        queue_salary_report_refresh(int(user_id), countdown=0)
+        return Response({"detail": f"Refresh queued for user {user_id}."})
     
 class SalaryTransactionViewSet(viewsets.ModelViewSet):
     serializer_class = SalaryTransactionSerializer

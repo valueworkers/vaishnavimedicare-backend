@@ -9,9 +9,10 @@ router.register(r'employee-payroll', views.EmployeePayrollViewSet, basename='emp
 router.register(r'salary-structures', views.SalaryStructureViewSet, basename='salary-structure')
 router.register(r'salary-transactions', views.SalaryTransactionViewSet, basename='salary-transaction')
 router.register(r'attendance-status', views.AttendanceStatusViewSet, basename='attendance-status')
+router.register("reports", views.PayrollReportAPIView, basename="payroll-reports")
 
 urlpatterns = [
     path('', include(router.urls)),
     path("attendance/", views.AttendanceView.as_view(), name="attendance"),
-    path("reports/", views.PayrollReportAPIView.as_view(), name="payroll-reports"),
+    
 ]

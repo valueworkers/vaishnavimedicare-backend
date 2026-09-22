@@ -115,37 +115,15 @@ class SalaryStructureSerializer(serializers.ModelSerializer):
 
         return attrs
     
-
-class AttendanceReportSerializer(serializers.Serializer):
-    start_date = serializers.DateField()
-    end_date = serializers.DateField()
-    calculated_through = serializers.DateField()
-    period_type = serializers.CharField()
-    present_days = serializers.IntegerField()
-    absent_days = serializers.IntegerField()
-    half_day_count = serializers.IntegerField()
-    paid_leave_days = serializers.IntegerField()
-    weekly_offs = serializers.IntegerField()
-    unpaid_leaves = serializers.IntegerField()
-    total_payable_days = serializers.DecimalField(max_digits=6, decimal_places=2)
-    total_payable_hours = serializers.DecimalField(max_digits=8, decimal_places=2)
-
-class SalaryReportSerializer(serializers.Serializer):
-    daily_rate = serializers.DecimalField(max_digits=10, decimal_places=2)
-    final_salary = serializers.DecimalField(max_digits=10, decimal_places=2)
-    total_payable_amount = serializers.DecimalField(max_digits=10, decimal_places=2)
-    paid_amount = serializers.DecimalField(max_digits=10, decimal_places=2)
-    remaining_payment = serializers.DecimalField(max_digits=10, decimal_places=2)
-    advance_amount = serializers.DecimalField(max_digits=10, decimal_places=2)
-
-class PayrollReportRowSerializer(serializers.Serializer):
-    """Serializes one ledger row from PayrollCalculator.reports()."""
-
-    user_id = serializers.IntegerField(source="user.pk")
-    start_date = serializers.DateField()
-    end_date = serializers.DateField()
-    attendance = AttendanceReportSerializer()
-    salary = SalaryReportSerializer()
+class SalaryReportSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SalaryReport
+        fields = [
+            "id", "user", "start_date", "end_date",
+            "daily_rate", "total_payable_amount", "paid_amount",
+            "remaining_payment", "advance_amount", "final_salary",
+            "created_at", "updated_at",
+        ]
 
 
 class SalaryTransactionSerializer(serializers.ModelSerializer):
