@@ -57,6 +57,8 @@ class EmployeePayrollListSerializer(serializers.ModelSerializer):
             "employee_id",
             "email",
             "mobile_number",
+            "is_active",
+            "is_deleted",
             "employee_category",
             "vendor_name",
             "basic_salary",
