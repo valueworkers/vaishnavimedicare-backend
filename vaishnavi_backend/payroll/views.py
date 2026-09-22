@@ -258,16 +258,14 @@ class AttendanceView(APIView):
                 )
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-class PayrollReportAPIView(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
+class SalaryReportViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
     """
-    Read-only access to the persisted SalaryReport table (the rows the task
-    writes to), plus a `refresh` action to manually re-queue that same task
-    for a user -- no need to touch Attendance/SalaryStructure just to force
-    a recompute.
+    Read-only access to the persisted SalaryReport table.
 
-    GET  /reports/?user_id=5&start_date=2026-04-01&end_date=2026-09-30
-    GET  /reports/<id>/
-    POST /reports/refresh/          body: {"user_id": 5}
+    GET  /salary-reports/?user_id=5&start_date=2026-04-01&end_date=2026-09-30&is_finalized=false
+    GET  /salary-reports/<id>/
+    POST /salary-reports/refresh/            body: {"user_id": 5}
+    POST /salary-reports/<id>/finalize/       -- locks that one report
     """
 
     serializer_class = SalaryReportSerializer
@@ -288,6 +286,10 @@ class PayrollReportAPIView(mixins.ListModelMixin, mixins.RetrieveModelMixin, vie
         if end_date:
             qs = qs.filter(end_date__lte=end_date)
 
+        is_finalized = self.request.query_params.get("is_finalized")
+        if is_finalized is not None:
+            qs = qs.filter(is_finalized=is_finalized.lower() in ("1", "true", "yes"))
+
         return qs.select_related("user").order_by("-start_date")
 
     @action(detail=False, methods=["post"])
@@ -300,8 +302,25 @@ class PayrollReportAPIView(mixins.ListModelMixin, mixins.RetrieveModelMixin, vie
         if not (request.user.is_superuser or request.user.is_owner or str(request.user.id) == str(user_id)):
             return Response({"detail": "You do not have permission to refresh this user's reports."}, status=403)
 
+        # Finalized reports are protected inside refresh_salary_reports()
+        # itself (see tasks.py) -- queuing here is safe either way, it just
+        # won't touch any period that's already locked.
         queue_salary_report_refresh(int(user_id), countdown=0)
         return Response({"detail": f"Refresh queued for user {user_id}."})
+
+    @action(detail=True, methods=["post"])
+    def finalize(self, request, pk=None):
+        """Locks this one report so it's never overwritten by a future refresh."""
+        report = self.get_object()
+        if not (request.user.is_superuser or request.user.is_owner):
+            return Response({"detail": "Only an owner or admin can finalize a report."}, status=403)
+
+        if report.is_finalized:
+            return Response({"detail": "Already finalized."})
+
+        report.is_finalized = True
+        report.save(update_fields=["is_finalized", "updated_at"])
+        return Response(SalaryReportSerializer(report).data)
     
 class SalaryTransactionViewSet(viewsets.ModelViewSet):
     serializer_class = SalaryTransactionSerializer

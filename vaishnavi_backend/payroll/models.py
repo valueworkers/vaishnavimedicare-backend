@@ -118,17 +118,6 @@ class SalaryStructure(models.Model):
         super().save(*args, **kwargs)
 
 class SalaryReport(models.Model):
-    """
-    Salary calculation & payment breakdown report.
-    Acts as an immutable audit record per salary period.
-
-    Sign convention:
-      - remaining_payment: amount still owed TO the employee (>= 0)
-      - advance_amount:    amount the employee was overpaid,
-                            carried forward as an advance (>= 0)
-    """
-
-    # -------------------- Relations --------------------
     user = models.ForeignKey(
         CustomUser,
         on_delete=models.CASCADE,
@@ -145,6 +134,20 @@ class SalaryReport(models.Model):
     # -------------------- Period --------------------
     start_date = models.DateField()
     end_date = models.DateField()
+
+    # -------------------- Attendance --------------------
+    present_days = models.PositiveIntegerField(default=0)
+    absent_days = models.PositiveIntegerField(default=0)
+    half_days = models.PositiveIntegerField(default=0)
+    paid_leave_days = models.PositiveIntegerField(default=0)
+    unpaid_leave_days = models.PositiveIntegerField(default=0)
+
+    payable_days = models.DecimalField(
+        max_digits=5,
+        decimal_places=1,
+        default=Decimal("0.0"),
+        help_text="present_days + half_days * 0.5 + paid_leave_days",
+    )
 
     # -------------------- Salary Structure --------------------
     daily_rate = models.DecimalField(
@@ -172,10 +175,6 @@ class SalaryReport(models.Model):
         editable=False,
     )
 
-    # -------------------- Audit --------------------
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
     # -------------------- Computed --------------------
     final_salary = models.DecimalField(
         max_digits=12,
@@ -188,6 +187,16 @@ class SalaryReport(models.Model):
         default=Decimal("0.00")
     )
 
+    is_finalized = models.BooleanField(
+        default=False, help_text="True once the month is closed; row becomes immutable"
+    )
+
+ 
+    # -------------------- Audit --------------------
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+
     # -------------------- Meta --------------------
     class Meta:
         ordering = ["-start_date"]
@@ -197,7 +206,7 @@ class SalaryReport(models.Model):
 
     def __str__(self):
         return f"{self.user} | {self.start_date} → {self.end_date}"
-
+    
 class SalaryTransaction(models.Model):
     """
     Records actual salary payment against a SalaryReport.

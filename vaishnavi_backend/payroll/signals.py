@@ -58,6 +58,12 @@ def rebuild_salary_chain(user):
         SalaryStructure.objects.bulk_update(updates, ["pf_amount", "esi_amount", "final_salary"])
 
 
+# NOTE on is_finalized: these signals just enqueue a user-level refresh --
+# they don't know which period a given Attendance/SalaryStructure row falls
+# into. The skip-if-finalized guard belongs in refresh_salary_reports()
+# itself (see the docstring on refresh_salary_reports_task in tasks.py),
+# since only it knows the period boundaries. No change needed here.
+
 @receiver(post_save, sender=SalaryStructure)
 def on_salary_structure_save(sender, instance, **kwargs):
     rebuild_salary_chain(instance.user)

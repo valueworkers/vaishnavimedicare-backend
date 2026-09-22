@@ -115,15 +115,22 @@ class SalaryStructureSerializer(serializers.ModelSerializer):
 
         return attrs
     
+
 class SalaryReportSerializer(serializers.ModelSerializer):
     class Meta:
         model = SalaryReport
         fields = [
             "id", "user", "start_date", "end_date",
+            "present_days", "absent_days", "half_days",
+            "paid_leave_days", "unpaid_leave_days", "payable_days",
             "daily_rate", "total_payable_amount", "paid_amount",
             "remaining_payment", "advance_amount", "final_salary",
-            "created_at", "updated_at",
+            "is_finalized", "created_at", "updated_at",
         ]
+        # is_finalized flips via the `finalize` action / finalize tasks only,
+        # never a direct field edit through this serializer.
+        read_only_fields = ["is_finalized"]
+
 
 
 class SalaryTransactionSerializer(serializers.ModelSerializer):

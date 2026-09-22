@@ -49,6 +49,20 @@ class PayrollCalculator:
         "UNPAID_LEAVE": "unpaid_leaves",
     }
 
+    # Maps the keys attendance_report() returns to the SalaryReport model's
+    # field names, wherever they differ (half_day_count -> half_days,
+    # unpaid_leaves -> unpaid_leave_days, total_payable_days -> payable_days).
+    # weekly_offs and total_payable_hours have no matching model field and
+    # are intentionally left out of the report snapshot.
+    ATTENDANCE_TO_REPORT_FIELDS = {
+        "present_days": "present_days",
+        "absent_days": "absent_days",
+        "half_day_count": "half_days",
+        "paid_leave_days": "paid_leave_days",
+        "unpaid_leaves": "unpaid_leave_days",
+        "total_payable_days": "payable_days",
+    }
+
     def __init__(self, user):
         self.user = user
 
@@ -223,15 +237,40 @@ class PayrollCalculator:
         rows = self.reports(period_type="MONTHLY")
         if not rows:
             return
+
+        # Don't overwrite a period that's already been closed out.
+        finalized_periods = set(
+            SalaryReport.objects.filter(
+                user=self.user,
+                start_date__in=[row["start_date"] for row in rows],
+                is_finalized=True,
+            ).values_list("start_date", "end_date")
+        )
+        rows = [row for row in rows if (row["start_date"], row["end_date"]) not in finalized_periods]
+        if not rows:
+            return
+        
+        def attendance_fields(row):
+            return {
+                model_field: row["attendance"][source_field]
+                for source_field, model_field in self.ATTENDANCE_TO_REPORT_FIELDS.items()
+            }
+
         SalaryReport.objects.bulk_create(
             [
                 SalaryReport(
                     user=row["user"], start_date=row["start_date"], end_date=row["end_date"],
+                    **attendance_fields(row),
                     **row["salary"],
                 )
                 for row in rows
             ],
             update_conflicts=True,
             unique_fields=["user", "start_date", "end_date"],
-            update_fields=["daily_rate", "total_payable_amount", "paid_amount", "advance_amount", "remaining_payment", "final_salary"],
+            update_fields=[
+                "present_days", "absent_days", "half_days", "paid_leave_days",
+                "unpaid_leave_days", "payable_days",
+                "daily_rate", "total_payable_amount", "paid_amount",
+                "advance_amount", "remaining_payment", "final_salary",
+            ],
         )

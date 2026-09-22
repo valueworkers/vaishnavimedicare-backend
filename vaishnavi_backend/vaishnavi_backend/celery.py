@@ -33,5 +33,9 @@ app.conf.beat_schedule = {
         'task': 'booking.tasks.reconcile_invoices',
         'schedule': crontab(minute='2-59/15'),      # :02, :17, :32, :47 — 2 min after each status sweep
     },
+    "finalize-closed-salary-reports": {
+        "task": "payroll.tasks.finalize_closed_period_reports",
+        "schedule": crontab(hour=1, minute=0),
+    },
 }
 app.conf.timezone = settings.TIME_ZONE
