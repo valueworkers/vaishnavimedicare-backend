@@ -158,49 +158,6 @@ class AttendanceStatusViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save(owner=self.request.user)
 
-# # new code 
-# class AttendanceView(APIView):
-#     permission_classes = [IsAuthenticated]
-#     pagination_class = AttendanceCursorPagination
-
-#     def _scoped_queryset(self, request):
-#         user = request.user
-#         if user.is_superuser and user.is_owner:
-#             return Attendance.objects.all()
-#         return Attendance.objects.filter(user=user)
-
-#     def get(self, request):
-#         queryset = self._scoped_queryset(request)
-#         for parameter, lookup in (("user_id", "user_id"), ("date", "date"), ("status", "status__code")):
-#             if value := request.query_params.get(parameter):
-#                 queryset = queryset.filter(**{lookup: value})
-#         if value := request.query_params.get("start_date"):
-#             queryset = queryset.filter(date__gte=value)
-#         if value := request.query_params.get("end_date"):
-#             queryset = queryset.filter(date__lte=value)
-#         queryset = queryset.select_related("user", "status").order_by("-date", "id")
-
-        
-#         serializer = AttendanceSerializer(queryset, many=True)
-#         return Response(serializer.data)
-
-#     def post(self, request):
-#         user_id, attendance_date = request.data.get("user"), request.data.get("date")
-#         if not user_id or not attendance_date:
-#             return Response({"error": "user and date fields are required"}, status=status.HTTP_400_BAD_REQUEST)
-
-#         attendance = Attendance.objects.select_related("user", "status").filter(
-#             user_id=user_id, date=attendance_date
-#         ).first()
-#         serializer = AttendanceSerializer(attendance, data=request.data, partial=bool(attendance))
-#         serializer.is_valid(raise_exception=True)
-#         serializer.save()
-#         return Response(
-#             {"message": "Attendance updated successfully" if attendance else "Attendance created successfully", "data": serializer.data},
-#             status=status.HTTP_200_OK if attendance else status.HTTP_201_CREATED,
-#         )
-
-# old code 
 class AttendanceView(APIView):
     """
     GET: List all attendance records with filters
@@ -307,42 +264,55 @@ class PayrollReportAPIView(APIView):
 
     def get(self, request):
         try:
-            start_date = datetime.strptime(request.query_params.get("start_date"), "%Y-%m-%d").date() if request.query_params.get("start_date") else None
-            end_date = datetime.strptime(request.query_params.get("end_date"), "%Y-%m-%d").date() if request.query_params.get("end_date") else None
+            start_date = (
+                datetime.strptime(request.query_params.get("start_date"), "%Y-%m-%d").date()
+                if request.query_params.get("start_date") else None
+            )
+            end_date = (
+                datetime.strptime(request.query_params.get("end_date"), "%Y-%m-%d").date()
+                if request.query_params.get("end_date") else None
+            )
         except ValueError:
             return Response({"error": "Invalid date format. Use YYYY-MM-DD"}, status=status.HTTP_400_BAD_REQUEST)
+
         if bool(start_date) != bool(end_date):
-            return Response({"error": "start_date and end_date must be supplied together"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"error": "start_date and end_date must be supplied together"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         period_type = request.query_params.get("period_type", "MONTHLY").upper()
         if period_type not in PayrollCalculator.PERIOD_TYPES:
             return Response({"error": "Invalid period_type"}, status=status.HTTP_400_BAD_REQUEST)
+
         target_users = self._target_users(request)
         if isinstance(target_users, Response):
             return target_users
-        results = []
-        for employee in target_users:
-            for report in PayrollCalculator(employee).reports(start_date, end_date, period_type):
-                results.append({
-                    "user": employee.id, "user_name": employee.get_full_name(),
-                    "start_date": report["start_date"], "end_date": report["end_date"],
-                    "attendance": report["attendance"],
-                    "salary": report["salary"],
-                })
-        return Response(sorted(results, key=lambda row: (row["start_date"], row["user"]), reverse=True))
+
+        results = [
+            row
+            for employee in target_users
+            for row in PayrollCalculator(employee).reports(start_date, end_date, period_type)
+        ]
+        results.sort(key=lambda row: (row["start_date"], row["user"].pk), reverse=True)
+
+        serializer = PayrollReportRowSerializer(results, many=True)
+        return Response(serializer.data)
 
     def _target_users(self, request):
         requester, user_id = request.user, request.query_params.get("user_id")
         if user_id:
             employee = get_object_or_404(CustomUser, pk=user_id)
             if not CanViewSalaryReport().has_object_permission(request, self, employee):
-                return Response({"error": "You do not have permission to view this report."}, status=status.HTTP_403_FORBIDDEN)
+                return Response(
+                    {"error": "You do not have permission to view this report."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
             return [employee]
-        if requester.is_superuser:
+        if requester.is_superuser or requester.is_owner:
             return CustomUser.objects.employees()
-        if requester.is_owner:
-            return CustomUser.objects.filter(hierarchy__owner=requester)
         return [requester]
-
+    
 class SalaryTransactionViewSet(viewsets.ModelViewSet):
     serializer_class = SalaryTransactionSerializer
     filterset_fields = ["salary_report", "status"]

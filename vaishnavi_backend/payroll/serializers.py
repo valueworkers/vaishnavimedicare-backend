@@ -115,45 +115,39 @@ class SalaryStructureSerializer(serializers.ModelSerializer):
 
         return attrs
     
-class SalaryReportSerializer(serializers.ModelSerializer):
-    final_salary = serializers.SerializerMethodField()
-    advance_amount = serializers.SerializerMethodField()
 
-    class Meta:
-        model = SalaryReport
-        fields = [
-            "id",
-            "user",
-            "start_date",
-            "end_date",
-            "final_salary",
-            "advance_amount",
-            "total_payable_amount",
-            "paid_amount",
-            "remaining_payment",
-        ]
-        read_only_fields = [
-            "id",
-            "remaining_payment",
-            "final_salary",
-            "advance_amount",
-        ]
+class AttendanceReportSerializer(serializers.Serializer):
+    start_date = serializers.DateField()
+    end_date = serializers.DateField()
+    calculated_through = serializers.DateField()
+    period_type = serializers.CharField()
+    present_days = serializers.IntegerField()
+    absent_days = serializers.IntegerField()
+    half_day_count = serializers.IntegerField()
+    paid_leave_days = serializers.IntegerField()
+    weekly_offs = serializers.IntegerField()
+    unpaid_leaves = serializers.IntegerField()
+    total_payable_days = serializers.DecimalField(max_digits=6, decimal_places=2)
+    total_payable_hours = serializers.DecimalField(max_digits=8, decimal_places=2)
 
-    def validate(self, attrs):
-        start = attrs.get("start_date")
-        end = attrs.get("end_date")
+class SalaryReportSerializer(serializers.Serializer):
+    daily_rate = serializers.DecimalField(max_digits=10, decimal_places=2)
+    final_salary = serializers.DecimalField(max_digits=10, decimal_places=2)
+    total_payable_amount = serializers.DecimalField(max_digits=10, decimal_places=2)
+    paid_amount = serializers.DecimalField(max_digits=10, decimal_places=2)
+    remaining_payment = serializers.DecimalField(max_digits=10, decimal_places=2)
+    advance_amount = serializers.DecimalField(max_digits=10, decimal_places=2)
 
-        if start and end and end < start:
-            raise serializers.ValidationError(
-                {"end_date": "End date must be after start date"}
-            )
+class PayrollReportRowSerializer(serializers.Serializer):
+    """Serializes one ledger row from PayrollCalculator.reports()."""
 
-        return attrs
-    def get_advance_amount(self, obj):
-        return obj.advance_amount
-    def get_final_salary(self, obj):
-        return obj.final_salary
-    
+    user_id = serializers.IntegerField(source="user.pk")
+    start_date = serializers.DateField()
+    end_date = serializers.DateField()
+    attendance = AttendanceReportSerializer()
+    salary = SalaryReportSerializer()
+
+
 class SalaryTransactionSerializer(serializers.ModelSerializer):
     salary_report_id = serializers.IntegerField(source='salary_report.id', read_only=True)
     start_date = serializers.DateField(source='salary_report.start_date', read_only=True)
@@ -196,3 +190,4 @@ class SalaryTransactionCreateSerializer(serializers.Serializer):
         except SalaryReport.DoesNotExist:
             raise serializers.ValidationError("Salary report not found.")
         return value
+
