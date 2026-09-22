@@ -10,7 +10,6 @@ class AttendanceStatusSerializer(serializers.ModelSerializer):
         fields = "__all__"
         read_only_fields = ["owner"]
 
-
 class AttendanceSerializer(serializers.ModelSerializer):
     status_label = serializers.CharField(source="status.label", read_only=True)
     status_code = serializers.CharField(source="status.code", read_only=True)
@@ -27,7 +26,6 @@ class AttendanceSerializer(serializers.ModelSerializer):
                 f"Attendance for {user.get_full_name()} on {attendance_date} already exists."
             )
         return attrs
-
 
 class EmployeePayrollListSerializer(serializers.ModelSerializer):
     """

@@ -246,6 +246,7 @@ class EmployeeViewSet(viewsets.ModelViewSet):
 
     filterset_fields = {
         "is_active": ["exact"],
+        "is_deleted": ["exact"],
         "city": ["exact", "icontains"],
         "user_type": ["exact", "in"],
         "date_joined": ["gte", "lte"],

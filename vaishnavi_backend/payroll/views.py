@@ -158,48 +158,148 @@ class AttendanceStatusViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save(owner=self.request.user)
 
-class AttendanceView(APIView):
-    permission_classes = [IsAuthenticated]
-    pagination_class = AttendanceCursorPagination
+# # new code 
+# class AttendanceView(APIView):
+#     permission_classes = [IsAuthenticated]
+#     pagination_class = AttendanceCursorPagination
 
-    def _scoped_queryset(self, request):
-        user = request.user
-        if user.is_superuser and user.is_owner:
-            return Attendance.objects.all()
-        return Attendance.objects.filter(user=user)
+#     def _scoped_queryset(self, request):
+#         user = request.user
+#         if user.is_superuser and user.is_owner:
+#             return Attendance.objects.all()
+#         return Attendance.objects.filter(user=user)
+
+#     def get(self, request):
+#         queryset = self._scoped_queryset(request)
+#         for parameter, lookup in (("user_id", "user_id"), ("date", "date"), ("status", "status__code")):
+#             if value := request.query_params.get(parameter):
+#                 queryset = queryset.filter(**{lookup: value})
+#         if value := request.query_params.get("start_date"):
+#             queryset = queryset.filter(date__gte=value)
+#         if value := request.query_params.get("end_date"):
+#             queryset = queryset.filter(date__lte=value)
+#         queryset = queryset.select_related("user", "status").order_by("-date", "id")
+
+        
+#         serializer = AttendanceSerializer(queryset, many=True)
+#         return Response(serializer.data)
+
+#     def post(self, request):
+#         user_id, attendance_date = request.data.get("user"), request.data.get("date")
+#         if not user_id or not attendance_date:
+#             return Response({"error": "user and date fields are required"}, status=status.HTTP_400_BAD_REQUEST)
+
+#         attendance = Attendance.objects.select_related("user", "status").filter(
+#             user_id=user_id, date=attendance_date
+#         ).first()
+#         serializer = AttendanceSerializer(attendance, data=request.data, partial=bool(attendance))
+#         serializer.is_valid(raise_exception=True)
+#         serializer.save()
+#         return Response(
+#             {"message": "Attendance updated successfully" if attendance else "Attendance created successfully", "data": serializer.data},
+#             status=status.HTTP_200_OK if attendance else status.HTTP_201_CREATED,
+#         )
+
+# old code 
+class AttendanceView(APIView):
+    """
+    GET: List all attendance records with filters
+    POST: Create or Update attendance
+    If attendance exists for user+date, update it. Otherwise create new.
+    """
+    permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        queryset = self._scoped_queryset(request)
-        for parameter, lookup in (("user_id", "user_id"), ("date", "date"), ("status", "status__code")):
-            if value := request.query_params.get(parameter):
-                queryset = queryset.filter(**{lookup: value})
-        if value := request.query_params.get("start_date"):
-            queryset = queryset.filter(date__gte=value)
-        if value := request.query_params.get("end_date"):
-            queryset = queryset.filter(date__lte=value)
-        queryset = queryset.select_related("user", "status").order_by("-date", "id")
+        user = request.user
+        # Admin → see everything
+        if user.is_superuser:
+            queryset = Attendance.objects.all()
+        # Owner → see attendance of their staff + managers
+        elif user.is_owner:
+            queryset = Attendance.objects.filter(user__hierarchy__owner=user)
+        # Staff or Manager → see only their own attendance
+        else:
+            queryset = Attendance.objects.filter(user=user)
 
-        paginator = self.pagination_class()
-        page = paginator.paginate_queryset(queryset, request, view=self)
-        serializer = AttendanceSerializer(page, many=True)
-        return paginator.get_paginated_response(serializer.data)
+        # Apply filters from query parameters
+        user_id = request.query_params.get('user_id', None)
+        if user_id:
+            queryset = queryset.filter(user_id=user_id)
+        
+        start_date = request.query_params.get('start_date', None)
+        end_date = request.query_params.get('end_date', None)
+        
+        if start_date:
+            queryset = queryset.filter(date__gte=start_date)
+        if end_date:
+            queryset = queryset.filter(date__lte=end_date)
+        
+        status_code = request.query_params.get('status', None)
+        if status_code:
+            queryset = queryset.filter(status__code=status_code)
+        
+        date = request.query_params.get('date', None)
+        if date:
+            queryset = queryset.filter(date=date)
+
+        queryset = queryset.select_related('user', 'status').order_by('-date')
+        serializer = AttendanceSerializer(queryset, many=True)
+        
+        return Response({
+            'count': queryset.count(),
+            'results': serializer.data
+        }, status=status.HTTP_200_OK)
 
     def post(self, request):
-        user_id, attendance_date = request.data.get("user"), request.data.get("date")
-        if not user_id or not attendance_date:
-            return Response({"error": "user and date fields are required"}, status=status.HTTP_400_BAD_REQUEST)
+        user_id = request.data.get('user')
+        date = request.data.get('date')
 
-        attendance = Attendance.objects.select_related("user", "status").filter(
-            user_id=user_id, date=attendance_date
-        ).first()
-        serializer = AttendanceSerializer(attendance, data=request.data, partial=bool(attendance))
-        serializer.is_valid(raise_exception=True)
-        serializer.save()
-        return Response(
-            {"message": "Attendance updated successfully" if attendance else "Attendance created successfully", "data": serializer.data},
-            status=status.HTTP_200_OK if attendance else status.HTTP_201_CREATED,
-        )
-    
+        # Validate required fields
+        if not user_id:
+            return Response(
+                {'error': 'user field is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if not date:
+            return Response(
+                {'error': 'date field is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Check if attendance already exists
+        try:
+            attendance = Attendance.objects.select_related('user', 'status').get(
+                user_id=user_id, 
+                date=date
+            )
+            # Update existing attendance
+            serializer = AttendanceSerializer(attendance, data=request.data, partial=True)
+            if serializer.is_valid():
+                serializer.save()
+                return Response(
+                    {
+                        'message': 'Attendance updated successfully',
+                        'data': serializer.data
+                    },
+                    status=status.HTTP_200_OK
+                )
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            
+        except Attendance.DoesNotExist:
+            # Create new attendance
+            serializer = AttendanceSerializer(data=request.data)
+            if serializer.is_valid():
+                serializer.save()
+                return Response(
+                    {
+                        'message': 'Attendance created successfully',
+                        'data': serializer.data
+                    },
+                    status=status.HTTP_201_CREATED
+                )
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
 class PayrollReportAPIView(APIView):
     """Single on-the-fly attendance and salary report endpoint."""
 
