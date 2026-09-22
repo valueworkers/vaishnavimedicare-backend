@@ -42,12 +42,6 @@ def assign_group_to_user(sender, instance, created, **kwargs):
 # Auto generate Employee Id 
 # ---------------------------
 
-from django.db.models.signals import post_save
-from django.dispatch import receiver
-from django.utils import timezone
-
-from .models import EmployeeProfile
-
 
 @receiver(post_save, sender=EmployeeProfile)
 def generate_employee_id(sender, instance, created, **kwargs):
@@ -59,12 +53,10 @@ def generate_employee_id(sender, instance, created, **kwargs):
     """
 
     # Only generate on creation
-    if not created:
-        return
-
-    # Do not overwrite existing employee_id
-    if instance.employee_id:
-        return
+    
+    # # Do not overwrite existing employee_id
+    # if instance.employee_id is not None or instance.employee_id!="":
+    #     return
 
     prefix_map = {
         "VSRE_MANAGER": "M",
@@ -84,9 +76,11 @@ def generate_employee_id(sender, instance, created, **kwargs):
 
     # Use update to avoid triggering post_save again
    
-    sender.objects.filter(
+    emp = sender.objects.filter(
         Q(employee_id__isnull=True) | Q(employee_id=""),
         pk=instance.pk,
-    ).update(
+    )
+
+    emp.update(
         employee_id=employee_id
     )

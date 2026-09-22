@@ -2,7 +2,7 @@
 from rest_framework import serializers
 from .models import Attendance, AttendanceStatus, SalaryStructure, SalaryReport, SalaryTransaction
 from accounts.models import CustomUser
-
+from decimal import Decimal
 
 class AttendanceStatusSerializer(serializers.ModelSerializer):
     class Meta:
@@ -116,8 +116,7 @@ class SalaryStructureSerializer(serializers.ModelSerializer):
                 })
 
         return attrs
-    
-
+   
 class SalaryReportSerializer(serializers.ModelSerializer):
     class Meta:
         model = SalaryReport
@@ -133,32 +132,51 @@ class SalaryReportSerializer(serializers.ModelSerializer):
         # never a direct field edit through this serializer.
         read_only_fields = ["is_finalized"]
 
-
-
 class SalaryTransactionSerializer(serializers.ModelSerializer):
-    salary_report_id = serializers.IntegerField(source='salary_report.id', read_only=True)
+    employee_name = serializers.CharField(source='user.get_full_name', read_only=True)
+    employee_id = serializers.CharField(source='user.employee_id', read_only=True)
+    employee_phone_number = serializers.CharField(source='user.phone_number', read_only=True)
     start_date = serializers.DateField(source='salary_report.start_date', read_only=True)
     end_date = serializers.DateField(source='salary_report.end_date', read_only=True)
-    employee_name = serializers.CharField(source='salary_report.user.get_full_name', read_only=True)
+    split = serializers.SerializerMethodField()
 
     class Meta:
         model = SalaryTransaction
         fields = [
-            'employee_name',
             'id',
             'transaction_id',
-            'salary_report_id',
+            'employee_name',
+            'employee_id',
+            'employee_phone_number',
             'start_date',
             'end_date',
             'amount_paid',
             'payment_method',
             'payment_reference',
+            'paid_at',
             'processed_at',
+            'split',
             'note',
             'status',
         ]
-        read_only_fields = ['transaction_id','start_date','end_date', 'processed_at']
+        read_only_fields = ['transaction_id', 'start_date', 'end_date', 'processed_at']
 
+    def get_split(self, obj):
+        basic = getattr(obj, 'structure_basic', None)
+        if basic is None:
+            return {'basic': None, 'pf': None, 'esi': None, 'other': None}
+
+        pf = obj.structure_pf
+        esi = obj.structure_esi
+        final = obj.structure_final
+        other = final - (basic + pf + esi)
+
+        return {
+            'basic': basic,
+            'pf': pf,
+            'esi': esi,
+            'other': other if other > 0 else Decimal("0.00"),
+        }    
 class SalaryTransactionCreateSerializer(serializers.Serializer):
     salary_report_id = serializers.IntegerField()
     amount_paid = serializers.DecimalField(max_digits=12, decimal_places=2)

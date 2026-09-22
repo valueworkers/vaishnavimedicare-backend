@@ -321,17 +321,23 @@ class SalaryReportViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, view
         report.is_finalized = True
         report.save(update_fields=["is_finalized", "updated_at"])
         return Response(SalaryReportSerializer(report).data)
-    
+    from django.db.models import OuterRef, Subquery
+
 class SalaryTransactionViewSet(viewsets.ModelViewSet):
     serializer_class = SalaryTransactionSerializer
-    filterset_fields = ["salary_report", "status"]
+    filterset_fields = ["salary_report", "user", "status"]
 
     def get_queryset(self):
         user = self.request.user
-        if user.is_superuser or user.is_owner:
-            queryset = SalaryTransaction.objects.all()
-        else:
-            queryset = SalaryTransaction.objects.filter(salary_report__user=user)
+
+        queryset = SalaryTransaction.objects.select_related(
+            "user",
+            "user__hierarchy",
+            "salary_report",
+        )
+
+        if not (user.is_superuser or user.is_owner):
+            queryset = queryset.filter(user=user)
 
         status_filter = self.request.query_params.get('status')
         if status_filter:
@@ -339,9 +345,22 @@ class SalaryTransactionViewSet(viewsets.ModelViewSet):
 
         user_filter = self.request.query_params.get('user_id')
         if user_filter:
-            queryset = queryset.filter(
-                salary_report__user_id=user_filter
-            )
+            queryset = queryset.filter(user_id=user_filter)
+
+        # Applicable SalaryStructure's split fields, computed once per
+        # row via correlated subquery instead of a per-row DB hit in
+        # the serializer.
+        latest_structure = SalaryStructure.objects.filter(
+            user=OuterRef('user_id'),
+            effective_from__lte=OuterRef('salary_report__start_date'),
+        ).order_by('-effective_from')
+
+        queryset = queryset.annotate(
+            structure_basic=Subquery(latest_structure.values('amount')[:1]),
+            structure_pf=Subquery(latest_structure.values('pf_amount')[:1]),
+            structure_esi=Subquery(latest_structure.values('esi_amount')[:1]),
+            structure_final=Subquery(latest_structure.values('final_salary')[:1]),
+        )
 
         return queryset
 
@@ -356,7 +375,7 @@ class SalaryTransactionViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        salary_report = SalaryReport.objects.select_for_update().get(
+        salary_report = SalaryReport.objects.select_related('user').select_for_update().get(
             id=serializer.validated_data['salary_report_id']
         )
 
@@ -383,6 +402,7 @@ class SalaryTransactionViewSet(viewsets.ModelViewSet):
 
         SalaryTransaction.objects.create(
             salary_report=salary_report,
+            user=salary_report.user,
             amount_paid=amount_paid,
             payment_method=serializer.validated_data['payment_method'],
             payment_reference=serializer.validated_data.get('payment_reference', ''),

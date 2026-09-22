@@ -209,8 +209,10 @@ class SalaryReport(models.Model):
     
 class SalaryTransaction(models.Model):
     """
-    Records actual salary payment against a SalaryReport.
-    Immutable financial transaction record.
+    Records an actual salary payment against a SalaryReport.
+
+    A SalaryTransaction represents a financial transaction and should
+    generally be treated as immutable once it reaches a final status.
     """
 
     PAYMENT_METHOD_CHOICES = [
@@ -238,16 +240,24 @@ class SalaryTransaction(models.Model):
     )
 
     # -------------------- Relations --------------------
+    user = models.ForeignKey(
+        CustomUser,
+        on_delete=models.PROTECT,
+        related_name="salary_transactions",
+        editable=False,
+    )
+
     salary_report = models.ForeignKey(
         SalaryReport,
         on_delete=models.PROTECT,
         related_name="transactions",
     )
+
     # -------------------- Payment --------------------
     amount_paid = models.DecimalField(
         max_digits=12,
         decimal_places=2,
-        help_text="Actual amount paid",
+        help_text="Actual amount paid.",
     )
 
     payment_method = models.CharField(
@@ -259,7 +269,7 @@ class SalaryTransaction(models.Model):
         max_length=100,
         blank=True,
         null=True,
-        help_text="Bank / UPI / cheque reference",
+        help_text="Bank / UPI / cheque reference.",
     )
 
     status = models.CharField(
@@ -269,24 +279,59 @@ class SalaryTransaction(models.Model):
         db_index=True,
     )
 
-    processed_at = models.DateTimeField(blank=True, null=True)
+    paid_at = models.DateTimeField(
+        blank=True,
+        null=True,
+        help_text="Actual date and time when the payment was completed.",
+    )
 
-    note = models.TextField(blank=True, null=True)
+    processed_at = models.DateTimeField(
+        blank=True,
+        null=True,
+        help_text="Date and time when the transaction reached a final state.",
+    )
+
+    note = models.TextField(
+        blank=True,
+        null=True,
+    )
 
     # -------------------- Audit --------------------
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+    )
+
+    updated_at = models.DateTimeField(
+        auto_now=True,
+    )
 
     # -------------------- Meta --------------------
     class Meta:
         ordering = ["-created_at"]
+
         constraints = [
             models.CheckConstraint(
                 condition=Q(amount_paid__gte=0),
-                name="amount_paid_non_negative",
+                name="salary_transaction_amount_paid_non_negative",
             ),
         ]
 
+        indexes = [
+            models.Index(
+                fields=["salary_report", "status"],
+                name="salary_tx_report_status_idx",
+            ),
+            models.Index(
+                fields=["paid_at"],
+                name="salary_tx_paid_at_idx",
+            ),
+            models.Index(
+                fields=["user", "status"],
+                name="salary_tx_user_status_idx",
+            ),
+        ]
+
+    # -------------------- String --------------------
     def __str__(self):
         return f"{self.transaction_id} | {self.salary_report.user}"
 
@@ -295,12 +340,26 @@ class SalaryTransaction(models.Model):
         if not self.transaction_id:
             self.transaction_id = self.generate_transaction_id()
 
-        # Set processed time on final states
-        if self.status in {"SUCCESS", "FAILED", "CANCELLED"} and not self.processed_at:
-            self.processed_at = timezone.localtime()
+        if not self.user_id:
+            self.user_id = self.salary_report.user_id
+
+        final_statuses = {
+            "SUCCESS",
+            "FAILED",
+            "CANCELLED",
+        }
+
+        if self.status in final_statuses and not self.processed_at:
+            self.processed_at = timezone.now()
+
+        # Successful payment should have a paid_at timestamp.
+        if self.status == "SUCCESS" and not self.paid_at:
+            self.paid_at = timezone.now()
+
         super().save(*args, **kwargs)
 
     # -------------------- Helpers --------------------
     @staticmethod
     def generate_transaction_id():
         return f"SAL{uuid.uuid4().hex[:12].upper()}"
+
