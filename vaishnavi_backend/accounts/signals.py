@@ -29,13 +29,13 @@ def assign_group_to_user(sender, instance, created, **kwargs):
 # ---------------------------
 # Auto-create Groups after Migration
 # ---------------------------
-@receiver(post_migrate)
-def create_default_groups_after_migration(sender, **kwargs):
-    """Automatically run group creation after migrations."""
-    if sender.name != "accounts":
-        return
-    print("Running post_migrate: creating default groups and permissions...")
-    call_command("create_default_groups")
+# @receiver(post_migrate)
+# def create_default_groups_after_migration(sender, **kwargs):
+#     """Automatically run group creation after migrations."""
+#     if sender.name != "accounts":
+#         return
+#     print("Running post_migrate: creating default groups and permissions...")
+#     call_command("create_default_groups")
 
 
 # ---------------------------
