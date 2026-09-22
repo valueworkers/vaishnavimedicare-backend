@@ -324,8 +324,40 @@ class SalaryReportViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, view
     from django.db.models import OuterRef, Subquery
 
 class SalaryTransactionViewSet(viewsets.ModelViewSet):
+    search_fields = [
+        "user__first_name",
+        "user__last_name",
+        "user__employee_profile__employee_id",
+        "user__employee_profile__vendor_name",
+        "=user__email",
+        "=user__mobile_number",
+    ]
+
+    filterset_fields = {
+        'salary_report': ['exact'],
+        'user': ['exact'],
+        'status': ['exact', 'in'],
+        'payment_method': ['exact', 'in'],
+        'transaction_id': ['exact'],
+        'payment_reference': ['exact'],
+        'amount_paid': ['exact', 'gte', 'lte'],
+        'paid_at': ['exact', 'gte', 'lte', 'date', 'isnull'],
+        'processed_at': ['exact', 'gte', 'lte', 'isnull'],
+        'created_at': ['gte', 'lte', 'date'],
+        'salary_report__start_date': ['exact', 'gte', 'lte'],
+        'salary_report__end_date': ['exact', 'gte', 'lte'],
+    }
+
+    ordering_fields = [
+        'created_at',
+        'updated_at',
+        'paid_at',
+        'processed_at',
+        'amount_paid',
+        'status',
+        'salary_report__start_date',
+    ]
     serializer_class = SalaryTransactionSerializer
-    filterset_fields = ["salary_report", "user", "status"]
 
     def get_queryset(self):
         user = self.request.user
@@ -339,17 +371,6 @@ class SalaryTransactionViewSet(viewsets.ModelViewSet):
         if not (user.is_superuser or user.is_owner):
             queryset = queryset.filter(user=user)
 
-        status_filter = self.request.query_params.get('status')
-        if status_filter:
-            queryset = queryset.filter(status=status_filter)
-
-        user_filter = self.request.query_params.get('user_id')
-        if user_filter:
-            queryset = queryset.filter(user_id=user_filter)
-
-        # Applicable SalaryStructure's split fields, computed once per
-        # row via correlated subquery instead of a per-row DB hit in
-        # the serializer.
         latest_structure = SalaryStructure.objects.filter(
             user=OuterRef('user_id'),
             effective_from__lte=OuterRef('salary_report__start_date'),
