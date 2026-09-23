@@ -344,8 +344,8 @@ class SalaryTransactionViewSet(viewsets.ModelViewSet):
         'paid_at': ['exact', 'gte', 'lte', 'date', 'isnull'],
         'processed_at': ['exact', 'gte', 'lte', 'isnull'],
         'created_at': ['gte', 'lte', 'date'],
-        'salary_report__start_date': ['exact', 'gte', 'lte'],
-        'salary_report__end_date': ['exact', 'gte', 'lte'],
+        'salary_report__start_date': ['exact'],
+        'salary_report__end_date': ['exact'],
     }
 
     ordering_fields = [
@@ -355,7 +355,17 @@ class SalaryTransactionViewSet(viewsets.ModelViewSet):
         'processed_at',
         'amount_paid',
         'status',
+        'payment_method',
+        'transaction_id',
+        'payment_reference',
+        'user__first_name',
+        'user__last_name',
         'salary_report__start_date',
+        'salary_report__end_date',
+        'structure_basic',
+        'structure_pf',
+        'structure_esi',
+        'structure_final',
     ]
     serializer_class = SalaryTransactionSerializer
 
@@ -454,3 +464,5 @@ class SalaryTransactionViewSet(viewsets.ModelViewSet):
             {'detail': 'Payment paid successfully.'},
             status=status.HTTP_200_OK
         )
+
+    
