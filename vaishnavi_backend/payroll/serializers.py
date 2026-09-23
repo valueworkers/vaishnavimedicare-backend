@@ -135,7 +135,7 @@ class SalaryReportSerializer(serializers.ModelSerializer):
 class SalaryTransactionSerializer(serializers.ModelSerializer):
     employee_name = serializers.CharField(source='user.get_full_name', read_only=True)
     employee_id = serializers.CharField(source='user.employee_id', read_only=True)
-    employee_phone_number = serializers.CharField(source='user.phone_number', read_only=True)
+    mobile_number = serializers.CharField(source='user.mobile_number', read_only=True)
     start_date = serializers.DateField(source='salary_report.start_date', read_only=True)
     end_date = serializers.DateField(source='salary_report.end_date', read_only=True)
     split = serializers.SerializerMethodField()
@@ -147,7 +147,7 @@ class SalaryTransactionSerializer(serializers.ModelSerializer):
             'transaction_id',
             'employee_name',
             'employee_id',
-            'employee_phone_number',
+            'mobile_number',
             'start_date',
             'end_date',
             'amount_paid',
@@ -177,6 +177,7 @@ class SalaryTransactionSerializer(serializers.ModelSerializer):
             'esi': esi,
             'other': other if other > 0 else Decimal("0.00"),
         }    
+    
 class SalaryTransactionCreateSerializer(serializers.Serializer):
     salary_report_id = serializers.IntegerField()
     amount_paid = serializers.DecimalField(max_digits=12, decimal_places=2)
