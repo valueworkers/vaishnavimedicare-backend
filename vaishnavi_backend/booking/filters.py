@@ -138,11 +138,13 @@ class EntityFilter(filters.FilterSet):
 class PatientFilter(django_filters.FilterSet):
     location_type = django_filters.CharFilter(field_name='location_type',label='Location Type')
     emr_count = django_filters.NumberFilter(field_name='emr_count',label='EMR Count')
+    booking_locality = django_filters.CharFilter(field_name='booking_locality',label='Booking Locality')
 
     class Meta:
         model = Patient
         fields = [
             "location_type",
+            "booking_locality",
             "gender",
             "blood_group",
             "registered_by",

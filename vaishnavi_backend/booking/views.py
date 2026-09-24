@@ -25,7 +25,7 @@ from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser
 from django.utils.dateparse import parse_datetime
 from itertools import groupby
-from django.db.models import Max, Subquery, Sum,Count,Q,Prefetch,F
+from django.db.models import Max, CharField, Sum,Count,Q,Prefetch,F
 from django.views.decorators.csrf import csrf_exempt
 from django.conf import settings
 import razorpay, hmac, hashlib, json
@@ -164,6 +164,11 @@ class PatientViewSet(viewsets.ModelViewSet):
         queryset = queryset.annotate(
             emr_count=Count("documents", distinct=True),
             location_type=Max('primaryorder__booking_type', default=None),
+             booking_locality=Coalesce(
+                Max("primaryorder__venue__location__locality"),
+                Max("primaryorder__client_address"),
+                output_field=CharField(),
+            ),
         )
 
         return queryset

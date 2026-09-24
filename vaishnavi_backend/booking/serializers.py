@@ -41,6 +41,7 @@ class PatientSerializer(serializers.ModelSerializer):
     )
     full_name = serializers.CharField(source="get_full_name", read_only=True)
     location_type = serializers.ReadOnlyField()
+    booking_locality = serializers.ReadOnlyField()
     emr_count = serializers.ReadOnlyField()
     
     class Meta:
