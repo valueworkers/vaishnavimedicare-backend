@@ -147,8 +147,11 @@ class ServiceViewSet(viewsets.ModelViewSet):
         return Response(ServiceDropdownSerializer(queryset).data)
     
 
+
 class EntityAssignUsersAPI(views.APIView):
     permission_classes = [IsAuthenticated, CanAssignUsers]
+
+    MANAGER_TYPES = ("VSRE_MANAGER", "LINE_MANAGER")
 
     # ENTITY → (Model, MiniSerializer)
     ENTITY_MODELS = {
@@ -158,95 +161,93 @@ class EntityAssignUsersAPI(views.APIView):
     }
 
     # -------------------------------------------------------
-    # POST → Assign managers + staff to entity
+    # POST → Assign employees (managers + staff) to entity
     # -------------------------------------------------------
     def post(self, request, entity_type):
         user = request.user
-        entity_id = request.data.get("entity_id", None)
-        # Detect entity + serializer
+
         meta = self.ENTITY_MODELS.get(entity_type)
         if not meta:
             return Response({"error": "Invalid entity type"}, status=400)
 
-        model, _ = meta
+        entity_id = request.data.get("entity_id")
+        if not entity_id:
+            return Response({"error": "entity_id is required"}, status=400)
 
+        employee_ids = request.data.get("employee_ids", [])
+        if not isinstance(employee_ids, list):
+            return Response({"error": "employee_ids must be a list"}, status=400)
+
+        model, _ = meta
         entity = get_object_or_404(model, id=entity_id)
 
-        # Extract data
-        manager_ids = request.data.get("manager_ids", [])
-        staff_ids = request.data.get("staff_ids", [])
-
-        # Pre-fetch
-        managers = CustomUser.objects.filter(
-            id__in=manager_ids,
-            user_type__in=["VSRE_MANAGER", "LINE_MANAGER"]
-        )
-        staff_members = CustomUser.objects.filter(
-            id__in=staff_ids,
-            user_type="VSRE_STAFF"
+        # Pre-fetch employees (managers + staff)
+        employees = (
+            CustomUser.objects.employees()
+            .filter(id__in=employee_ids)
+            .select_related("hierarchy")
         )
 
-        # Permission checks
+        # Validation + permission checks
         try:
-            validate_users_exist(manager_ids, staff_ids)
+            validate_employees_exist(employee_ids, employees)
+
             if user.is_owner:
-                validate_owner_permissions(user, managers, staff_members)
-
+                validate_owner_permissions(user, employees)
             elif user.is_manager:
-                validate_manager_permissions(user, entity, manager_ids, staff_members)
-
+                validate_manager_permissions(user, entity, employees)
             else:
                 raise PermissionError("Not allowed")
 
         except PermissionError as e:
             return Response({"error": str(e)}, status=403)
 
-        # Assign managers
-        if manager_ids:
-            entity.manager.set(managers)
+        # Split employees by role
+        managers = employees.filter(user_type__in=self.MANAGER_TYPES)
+        manager_ids = list(managers.values_list("id", flat=True))
+        staff_ids = set(
+            employees.exclude(user_type__in=self.MANAGER_TYPES).values_list("id", flat=True)
+        )
 
-            # Auto-assign staff under these managers
-            auto_staff = auto_assign_staff(manager_ids)
-            staff_members = (staff_members | auto_staff).distinct()
+        with transaction.atomic():
+            if manager_ids:
+                entity.manager.set(managers)
+                # Auto-assign staff reporting to these managers
+                staff_ids |= set(
+                    auto_assign_staff(manager_ids).values_list("id", flat=True)
+                )
 
-        # Assign staff
-        entity.staff.set(staff_members)
-        entity.save()
+            staff_members = CustomUser.objects.filter(id__in=staff_ids)
+            entity.staff.set(staff_members)
 
         return Response({
-            "message": f"Users assigned successfully to {entity_type}",
+            "message": f"Employees assigned successfully to {entity_type}",
             "entity_id": entity.id,
-            "assigned_managers": managers.values("id", "first_name", "last_name"),
-            "assigned_staff": staff_members.values("id", "first_name", "last_name"),
+            "assigned_managers": list(managers.values("id", "first_name", "last_name")),
+            "assigned_staff": list(staff_members.values("id", "first_name", "last_name")),
         })
 
     # -------------------------------------------------------
-    # GET → Show assigned + assignable entities for a user
+    # GET → unchanged
     # -------------------------------------------------------
     def get(self, request, entity_type):
         request_user = request.user
 
-        # Detect entity + serializer
         meta = self.ENTITY_MODELS.get(entity_type)
         if not meta:
             return Response({"error": "Invalid entity type"}, status=400)
 
         model, MiniSerializer = meta
-
         qs = model.objects.filter(is_active=True)
 
         if request_user.is_owner:
             qs = qs.filter(owner=request_user)
-
         elif request_user.is_manager:
             qs = qs.filter(managers=request_user)
-
         else:
             return Response({"error": "Not allowed"}, status=403)
 
-        assignable_data = MiniSerializer(qs, many=True).data
-
         return Response({
             "entity_type": entity_type,
-            "assignable_entities": assignable_data,
+            "assignable_entities": MiniSerializer(qs, many=True).data,
         })
