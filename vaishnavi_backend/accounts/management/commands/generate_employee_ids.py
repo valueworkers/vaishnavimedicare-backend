@@ -4,7 +4,7 @@ from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from accounts.models import EmployeeProfile
+from accounts.models import CustomUser, EmployeeProfile
 
 
 class Command(BaseCommand):
@@ -23,8 +23,9 @@ class Command(BaseCommand):
         generated_count = 0
         skipped_count = 0
 
-        profiles = (
-            EmployeeProfile.objects
+        user_ids = list(CustomUser.objects.employees().values_list("id",flat=True))
+        profiles, _ = (
+            EmployeeProfile.objects.get_or_create(user__in=user_ids)
             .select_related("user")
             .filter(Q(employee_id__isnull=True) | Q(employee_id=""))
             .order_by("user_id")

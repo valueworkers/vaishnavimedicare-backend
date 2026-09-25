@@ -524,6 +524,69 @@ class EmployeeListSerializer(ReportsToMixin, AssignmentsMixin, serializers.Model
             "resources",
         ]
 
+# ----------------------- BulkEmployeeUploadSerializer ---------------
+class BulkEmployeeUploadSerializer(serializers.Serializer):
+    """
+    Validates the incoming multipart upload for POST /employees/bulk-upload/.
+    Keeps the file-shape checks (extension, size) out of the view and in a
+    single reusable, testable place; the *content* of the workbook (rows,
+    field values) is still validated row-by-row by BulkEmployeeImporter,
+    since that depends on live DB state (existing users, shifts, etc.)
+    that a plain serializer field can't check.
+    """
+
+    file = serializers.FileField(required=True)
+
+    ALLOWED_EXTENSIONS = (".xlsx", ".xlsm")
+    MAX_FILE_SIZE_MB = 10
+
+    def validate_file(self, value):
+        name = value.name.lower()
+        if not name.endswith(self.ALLOWED_EXTENSIONS):
+            raise serializers.ValidationError(
+                f"File must be one of: {', '.join(self.ALLOWED_EXTENSIONS)}."
+            )
+
+        max_bytes = self.MAX_FILE_SIZE_MB * 1024 * 1024
+        if value.size > max_bytes:
+            raise serializers.ValidationError(
+                f"File exceeds {self.MAX_FILE_SIZE_MB}MB limit."
+            )
+
+        return value
+
+class BulkUploadRowResultSerializer(serializers.Serializer):
+    """A single successful (created/updated) row in the response."""
+
+    row = serializers.IntegerField()
+    status = serializers.ChoiceField(choices=["created", "updated"])
+    employee_id = serializers.CharField()
+    mobile_number = serializers.CharField()
+    full_name = serializers.CharField()
+
+class BulkUploadRowErrorSerializer(serializers.Serializer):
+    """A single failed row in the response."""
+
+    row = serializers.IntegerField()
+    errors = serializers.DictField(child=serializers.CharField())
+
+class BulkUploadSummarySerializer(serializers.Serializer):
+    created = serializers.IntegerField()
+    updated = serializers.IntegerField()
+    failed = serializers.IntegerField()
+
+class BulkUploadResponseSerializer(serializers.Serializer):
+    """
+    Documents the exact shape process_bulk_upload() returns, so this can be
+    plugged straight into drf-spectacular / drf-yasg for schema generation,
+    and so the view's return value can be spot-checked against it in tests.
+    """
+
+    summary = BulkUploadSummarySerializer()
+    created = BulkUploadRowResultSerializer(many=True)
+    updated = BulkUploadRowResultSerializer(many=True)
+    failed = BulkUploadRowErrorSerializer(many=True)
+
 # ----------------------- Customer Serializer ---------------
 class CustomerSerializer(BaseUserSerializer):
     """Serializer for Customers — created by Owner."""

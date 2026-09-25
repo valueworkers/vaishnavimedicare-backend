@@ -1,4 +1,4 @@
- # views.py
+# views.py
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
 from django.contrib.auth.hashers import check_password 
@@ -6,6 +6,7 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import viewsets,generics,status
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.views import APIView
+from rest_framework.parsers import MultiPartParser
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated,AllowAny
@@ -13,7 +14,7 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 from .permissions import CanManageEmployees, IsOwner, IsOwnerOrReadOnly
 from .models import CustomUser, UserHierarchy, PricingModel, UserPlan,StaffForHire
 from .serializers import *
-from .utils import send_otp,PasswordResetOTP
+from .utils import send_otp,PasswordResetOTP, BulkEmployeeImporter
 import uuid
 
 # ---------------------- User registration ViewSet ----------------------
@@ -354,6 +355,47 @@ class EmployeeViewSet(viewsets.ModelViewSet):
             EmployeeListSerializer(employee, context=self.get_serializer_context()).data
         )
 
+class BulkEmployeeUploadAPIView(APIView):
+    """
+    POST /employees/bulk-upload/
+    multipart/form-data, field name "file" — an .xlsx following the
+    provided employee_bulk_upload_template.xlsx layout.
+    """
+    permission_classes = [IsOwner]
+    parser_classes = [MultiPartParser]
+    
+
+    def post(self, request):
+        upload_serializer = BulkEmployeeUploadSerializer(data=request.data)
+        upload_serializer.is_valid(raise_exception=True)
+        uploaded_file = upload_serializer.validated_data["file"]
+
+        importer = BulkEmployeeImporter(created_by=request.user)
+
+        try:
+            rows = importer.parse_workbook(uploaded_file)
+        except Exception as e:  # noqa: BLE001
+            return Response({"detail": f"Could not read workbook: {e}"}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not rows:
+            return Response({"detail": "No data rows found below the header."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if len(rows) > importer.MAX_ROWS:
+            return Response(
+                {"detail": f"Max {importer.MAX_ROWS} rows per upload. Split the file and retry."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        results = importer.process_bulk_upload(rows)
+
+        summary = {
+            "created": len(results["created"]),
+            "updated": len(results["updated"]),
+            "failed": len(results["failed"]),
+        }
+        response_status = status.HTTP_207_MULTI_STATUS if results["failed"] else status.HTTP_200_OK
+        response_data = {"summary": summary, **results}
+        return Response(response_data, status=response_status)
 
 class CustomerViewSet(viewsets.ModelViewSet):
     """

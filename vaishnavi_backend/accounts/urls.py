@@ -28,6 +28,7 @@ urlpatterns += [
     path("password-reset/", ResetPasswordView.as_view(), name="reset-password"),
     path('token/refresh/', TokenRefreshView.as_view()),
     path('profile/', UserProfileView.as_view()),
+    path('employees-bulk-upload/', BulkEmployeeUploadAPIView.as_view()),
     path("assign/<user_id>/parent/", ParentAssignmentView.as_view()),
     
 ]
