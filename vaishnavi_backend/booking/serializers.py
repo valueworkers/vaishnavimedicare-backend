@@ -71,7 +71,6 @@ class PatientDocumentSerializer(serializers.ModelSerializer):
         fields = "__all__"
         read_only_fields = ["uploaded_by"]
 
-
 class PatientMiniSerializer(serializers.ModelSerializer):
     name = serializers.CharField(source="get_full_name", read_only=True)
 
@@ -575,7 +574,6 @@ class PaymentSerializer(serializers.ModelSerializer):
 
     def get_is_mapped(self, obj):
         return True if obj.patient and obj.invoice else False
-
 
 class PaymentCreateSerializer(serializers.ModelSerializer):
     """Serializer for creating payments"""

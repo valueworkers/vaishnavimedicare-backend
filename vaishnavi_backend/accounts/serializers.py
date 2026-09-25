@@ -17,6 +17,7 @@ from django.contrib.auth.password_validation import validate_password
 
 # ---------------------- Entity mini Serializer ----------------------
 class VenueMiniSerializer(serializers.ModelSerializer):
+    # location
     class Meta:
         model = Venue
         fields = ["id", "name", "is_active"]
