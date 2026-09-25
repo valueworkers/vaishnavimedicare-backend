@@ -235,7 +235,6 @@ class PatientViewSet(viewsets.ModelViewSet):
 
         return Response(data, status=status.HTTP_200_OK)
 
-
 class PatientDocumentViewSet(viewsets.ModelViewSet):
     """
     list:     GET    /patients/documents/
