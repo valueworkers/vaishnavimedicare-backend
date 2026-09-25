@@ -1,4 +1,3 @@
-
 from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.db.models import Q
@@ -23,17 +22,19 @@ class Command(BaseCommand):
         generated_count = 0
         skipped_count = 0
 
-        user_ids = list(CustomUser.objects.employees().values_list("id",flat=True))
-        profiles, _ = (
-            EmployeeProfile.objects.get_or_create(user__in=user_ids)
-            .select_related("user")
-            .filter(Q(employee_id__isnull=True) | Q(employee_id=""))
-            .order_by("user_id")
-        )
+        users = list(CustomUser.objects.employees().order_by("id"))
 
-        for profile in profiles:
+        for user in users:
 
-            user = profile.user
+            # get_or_create() only works one row at a time (it can't take
+            # a bulk __in filter) — so it's called per-user here, creating
+            # an EmployeeProfile for any employee who doesn't have one yet.
+            profile, created = EmployeeProfile.objects.get_or_create(user=user)
+
+            if len(profile.employee_id)>2:
+                # Already has an ID — nothing to do.
+                skipped_count += 1
+                continue
 
             # Skip invalid user types
             prefix = prefix_map.get(user.user_type)
@@ -45,19 +46,16 @@ class Command(BaseCommand):
             # Generate employee ID
             employee_id = f"{prefix}{year}{user.id:04d}"
 
-            with transaction.atomic():
-
-                # Protect against overwriting existing IDs
-               updated = (
-                    EmployeeProfile.objects
-                    .filter(
-                        Q(employee_id__isnull=True) | Q(employee_id=""),
-                        pk=profile.pk,
-                    )
-                    .update(
-                        employee_id=employee_id
-                    )
+            # Protect against overwriting existing IDs (single UPDATE,
+            # no need to wrap this in transaction.atomic() since it's
+            # already one atomic statement).
+            updated = (
+                EmployeeProfile.objects
+                .filter(
+                    pk=profile.pk,
                 )
+                .update(employee_id=employee_id)
+            )
 
             if updated:
                 generated_count += 1
