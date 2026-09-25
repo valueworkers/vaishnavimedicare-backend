@@ -211,20 +211,81 @@ class EntityAssignUsersAPI(views.APIView):
 
         with transaction.atomic():
             if manager_ids:
-                entity.manager.set(managers)
-                # Auto-assign staff reporting to these managers
+                entity.manager.add(*managers)
                 staff_ids |= set(
                     auto_assign_staff(manager_ids).values_list("id", flat=True)
                 )
 
             staff_members = CustomUser.objects.filter(id__in=staff_ids)
-            entity.staff.set(staff_members)
+            entity.staff.add(*staff_members)
 
         return Response({
             "message": f"Employees assigned successfully to {entity_type}",
             "entity_id": entity.id,
             "assigned_managers": list(managers.values("id", "first_name", "last_name")),
             "assigned_staff": list(staff_members.values("id", "first_name", "last_name")),
+        })
+
+    
+    # -------------------------------------------------------
+    # DELETE → Unassign employees (managers + staff) from entity
+    # -------------------------------------------------------
+    def delete(self, request, entity_type):
+        user = request.user
+
+        meta = self.ENTITY_MODELS.get(entity_type)
+        if not meta:
+            return Response({"error": "Invalid entity type"}, status=400)
+
+        entity_id = request.data.get("entity_id")
+        if not entity_id:
+            return Response({"error": "entity_id is required"}, status=400)
+
+        employee_ids = request.data.get("employee_ids", [])
+        if not isinstance(employee_ids, list):
+            return Response({"error": "employee_ids must be a list"}, status=400)
+
+        model, _ = meta
+        entity = get_object_or_404(model, id=entity_id)
+
+        # Pre-fetch employees (managers + staff)
+        employees = (
+            CustomUser.objects.employees()
+            .filter(id__in=employee_ids)
+            .select_related("hierarchy")
+        )
+
+        # Validation + permission checks
+        try:
+            validate_employees_exist(employee_ids, employees)
+
+            if user.is_owner:
+                validate_owner_permissions(user, employees)
+            elif user.is_manager:
+                validate_manager_permissions(user, entity, employees)
+            else:
+                raise PermissionError("Not allowed")
+
+        except PermissionError as e:
+            return Response({"error": str(e)}, status=403)
+
+        # Split employees by role
+        managers = employees.filter(user_type__in=self.MANAGER_TYPES)
+        manager_ids = list(managers.values_list("id", flat=True))
+        staff_qs = employees.exclude(user_type__in=self.MANAGER_TYPES)
+
+        with transaction.atomic():
+            if manager_ids:
+                entity.manager.remove(*managers)
+
+            if staff_qs.exists():
+                entity.staff.remove(*staff_qs)
+
+        return Response({
+            "message": f"Employees unassigned successfully from {entity_type}",
+            "entity_id": entity.id,
+            "removed_managers": list(managers.values("id", "first_name", "last_name")),
+            "removed_staff": list(staff_qs.values("id", "first_name", "last_name")),
         })
 
     # -------------------------------------------------------
