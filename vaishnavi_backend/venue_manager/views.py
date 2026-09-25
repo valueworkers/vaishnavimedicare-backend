@@ -226,7 +226,6 @@ class EntityAssignUsersAPI(views.APIView):
             "assigned_staff": list(staff_members.values("id", "first_name", "last_name")),
         })
 
-    
     # -------------------------------------------------------
     # DELETE → Unassign employees (managers + staff) from entity
     # -------------------------------------------------------

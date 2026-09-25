@@ -13,7 +13,7 @@ def validate_employees_exist(employee_ids, employees):
             "Invalid": f"Employees do not exist with IDs: {', '.join(map(str, missing))}"
         })
 
-
+# TODO: remove it after shift to tenant based 
 def validate_owner_permissions(user, employees):
     for e in employees:
         if e.hierarchy.owner != user:
