@@ -149,6 +149,7 @@ class PatientFilter(django_filters.FilterSet):
             "blood_group",
             "registered_by",
             "registration_date",
+            "is_probono",
             "is_registration_fees_paid",
             "is_deleted",
             "is_active",

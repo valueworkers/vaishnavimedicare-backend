@@ -128,6 +128,9 @@ class PatientViewSet(viewsets.ModelViewSet):
         "last_name",
         "=email",
         "=phone",
+        # "affiliate",
+        # "source",
+        # "referred_by",
     ]
 
     ordering_fields = [
@@ -149,6 +152,10 @@ class PatientViewSet(viewsets.ModelViewSet):
         "is_active",
         "location_type",
         "emr_count",
+        "affiliate",
+        "source",
+        "referred_by",
+        "is_probono",
     ]
 
     ordering = ['-registration_date']

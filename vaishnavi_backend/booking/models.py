@@ -323,6 +323,13 @@ class Patient(models.Model):
         validators=[MinValueValidator(1950), MaxValueValidator(timezone.localtime().year)]
     )
 
+    # Referral / Marketing Info
+    affiliate = models.CharField(max_length=100, null=True, blank=True)
+    source = models.CharField(max_length=100, null=True, blank=True)
+    referred_by = models.CharField(max_length=100, null=True, blank=True)
+    is_probono = models.BooleanField(default=False)
+
+    # status
     is_registration_fees_paid = models.BooleanField(default=False)
     is_deleted = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
