@@ -41,22 +41,33 @@ class PatientSerializer(serializers.ModelSerializer):
     )
     full_name = serializers.CharField(source="get_full_name", read_only=True)
     location_type = serializers.ReadOnlyField()
+    onboading_date = serializers.DateTimeField(read_only=True)
     booking_locality = serializers.ReadOnlyField()
     emr_count = serializers.ReadOnlyField()
     
     class Meta:
         model = Patient
-        fields = "__all__"
+        fields = [
+            "id","patient_id","full_name","first_name","last_name",
+            "email","phone","address","age", "emergency_contact",
+            "emergency_phone","emergency_contact_2","emergency_phone_2",
+            "medical_conditions","allergies", "present_health_condition",
+            "gender","blood_group", "preferred_language","education_qualifications",
+            "earlier_occupation","year_of_retirement","location_type","onboading_date",
+            "booking_locality","emr_count","affiliate","source","referred_by",
+            "is_probono","is_registration_fees_paid","is_deleted","is_active",
+            "registered_by","name_registered_by","updated_at"
+        ]
+
         read_only_fields = [
             "id",
             "patient_id",
             "name_registered_by",
             "registered_by",
-            "registration_date",
             "is_active"
-            "is_deleted",
-            
+            "is_deleted",   
         ]
+            
 
 class PatientDocumentFilesSerializer(serializers.ModelSerializer):
     class Meta:

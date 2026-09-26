@@ -24,7 +24,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser
 from django.utils.dateparse import parse_datetime
-from django.db.models import Max,IntegerField, CharField, Sum,Count,Q,Prefetch,F
+from django.db.models import Max,Min,IntegerField, CharField,DateTimeField, Sum,Count,Q,Prefetch,F
 from django.db.models.functions import Cast
 from django.views.decorators.csrf import csrf_exempt
 from django.conf import settings
@@ -147,7 +147,7 @@ class PatientViewSet(viewsets.ModelViewSet):
         "emergency_contact_2",
         "emergency_phone_2",
         "gender",
-        "registration_date",
+        "onboading_date",
         "is_deleted",
         "is_active",
         "location_type",
@@ -158,7 +158,7 @@ class PatientViewSet(viewsets.ModelViewSet):
         "is_probono",
     ]
 
-    ordering = ['-registration_date']
+    ordering = ["first_name","last_name",]
 
     def get_queryset(self):
         user = self.request.user
@@ -176,10 +176,17 @@ class PatientViewSet(viewsets.ModelViewSet):
                 Max("primaryorder__client_address"),
                 output_field=CharField(),
             ),
+            onboading_date=Coalesce(
+                Min("primaryorder__start_datetime", default=None),
+                "registration_date",
+                output_field=DateTimeField()
+                
+            ),
             patient_id_num=Cast(
                 "patient_id",
                 IntegerField(),
             ),
+            
         )
 
         return queryset

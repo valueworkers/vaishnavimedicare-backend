@@ -136,8 +136,8 @@ class EntityFilter(filters.FilterSet):
         return queryset
 
 class PatientFilter(django_filters.FilterSet):
+    onboading_date = django_filters.CharFilter(field_name='onboading_date',label='Onboading Date')
     location_type = django_filters.CharFilter(field_name='location_type',label='Location Type')
-    emr_count = django_filters.NumberFilter(field_name='emr_count',label='EMR Count')
     booking_locality = django_filters.CharFilter(field_name='booking_locality',label='Booking Locality')
 
     class Meta:
@@ -148,7 +148,7 @@ class PatientFilter(django_filters.FilterSet):
             "gender",
             "blood_group",
             "registered_by",
-            "registration_date",
+            "onboading_date",
             "is_probono",
             "is_registration_fees_paid",
             "is_deleted",
