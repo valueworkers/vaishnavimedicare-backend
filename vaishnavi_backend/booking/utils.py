@@ -392,8 +392,8 @@ class PaymentMappingService:
         dry_run=True: never writes to the DB. Same result shape as a real
         run, plus "dry_run": True, so the API can preview without committing.
         """
-        if self.payment.invoice_id and self.payment.patient_id:
-            return {"status": "ALREADY_MAPPED", "payment_id": self.payment.id}
+        if self.payment.invoice_id:
+            return {"status": "ALREADY_MAPPED", "payment_id": self.payment.id, "invoice_id": self.payment.invoice_id}
 
         candidates = self._find_candidates()
         scored = [r for r in (self._score_invoice(inv) for inv in candidates) if r["score"] > 0]
@@ -485,6 +485,7 @@ class PaymentMappingService:
         return (
             TotalInvoice.objects.filter(filters)
             .exclude(remaining_amount__lte=0)  # fully paid invoices aren't valid targets
+            .filter(remaining_amount__gte=payment.amount)
             .select_related("patient")
             .distinct()
         )
@@ -558,6 +559,22 @@ class PaymentMappingService:
             return {"status": "ALREADY_MAPPED", "payment_id": payment.id, "invoice_id": payment.invoice_id}
 
         invoice = TotalInvoice.objects.select_for_update().get(pk=result["invoice"].pk)
+        # A different payment may have consumed this balance since candidates
+        # were scored. Never let automatic mapping overpay an invoice.
+        invoice.recalculate_payments()
+        if invoice.remaining_amount < payment.amount:
+            stale_candidate = {
+                **result,
+                "reason": {
+                    **result["reason"],
+                    "amount_fits_remaining": False,
+                    "balance_changed_during_mapping": True,
+                },
+            }
+            return self._mark_review(
+                stale_candidate,
+                [stale_candidate],
+            )
         patient = invoice.patient
 
         payment.invoice = invoice

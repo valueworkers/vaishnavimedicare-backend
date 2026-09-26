@@ -2053,13 +2053,27 @@ class PaymentViewSet(viewsets.ModelViewSet):
     @action(detail=False,methods=["post"],url_path="auto-map")
     def auto_map(self, request):
         MAX_SYNC_BATCH = 200
-        payment_ids = request.data.get("payment_ids")
-        preview = bool(request.data.get("preview", False))
+        if not isinstance(request.data, dict):
+            raise ValidationError({"detail": "Payload must be an object."})
 
-        queryset = Payment.objects.filter(
+        payment_ids = request.data.get("payment_ids")
+        preview_value = request.data.get("preview", False)
+        if not isinstance(preview_value, bool):
+            raise ValidationError({"preview": "Must be a boolean."})
+        preview = preview_value
+
+        if payment_ids is not None:
+            if not isinstance(payment_ids, list) or not payment_ids:
+                raise ValidationError({"payment_ids": "Must be a non-empty list of payment IDs."})
+            if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in payment_ids):
+                raise ValidationError({"payment_ids": "Every payment ID must be a positive integer."})
+            payment_ids = list(dict.fromkeys(payment_ids))
+
+        # Use the viewset queryset so customer scoping and API filters apply.
+        queryset = self.get_queryset().filter(
             invoice__isnull=True,
             mapping_status__in=["UNMAPPED", "REVIEW"],
-        )
+        ).order_by("id")
         if payment_ids:
             queryset = queryset.filter(id__in=payment_ids)
 

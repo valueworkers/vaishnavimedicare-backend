@@ -130,53 +130,35 @@ def trigger_auto_continue_secondary_orders():
     return {"created": created_count, "failed": failed_count}
 
 
-# @shared_task
-# def auto_map_unmapped_payments():
+@shared_task
+def auto_map_unmapped_payments():
+    """Run automatic invoice matching for all eligible unmapped payments."""
+    payments = (
+        Payment.objects
+        .filter(invoice__isnull=True, mapping_status__in=["UNMAPPED", "REVIEW"])
+        .order_by("id")
+    )
+    results = {
+        "processed": 0,
+        "auto_mapped": 0,
+        "review": 0,
+        "unmapped": 0,
+        "already_mapped": 0,
+        "errors": 0,
+    }
 
-#     payments = (
-#         Payment.objects
-#         .filter(
-#             invoice__isnull=True,
-#             mapping_status__in=[
-#                 "UNMAPPED",
-#                 "REVIEW",
-#             ],
-#         )
-#         .order_by("id")
-#     )
+    for payment in payments.iterator(chunk_size=100):
+        results["processed"] += 1
+        try:
+            result = PaymentMappingService(payment).run()
+            status = result["status"].lower()
+            if status in results:
+                results[status] += 1
+            elif status == "auto_mapped":
+                results["auto_mapped"] += 1
+        except Exception:
+            results["errors"] += 1
+            logger.exception("Auto invoice mapping failed for Payment %s", payment.pk)
 
-#     results = {
-#         "processed": 0,
-#         "auto_mapped": 0,
-#         "review": 0,
-#         "unmapped": 0,
-#         "errors": 0,
-#     }
-
-#     for payment in payments.iterator(
-#         chunk_size=100
-#     ):
-
-#         results["processed"] += 1
-
-#         try:
-            
-#             result = PaymentMappingService(
-#                 payment
-#             ).run()
-
-#             status = result["status"]
-
-#             if status == "AUTO_MAPPED":
-#                 results["auto_mapped"] += 1
-
-#             elif status == "REVIEW":
-#                 results["review"] += 1
-
-#             elif status == "UNMAPPED":
-#                 results["unmapped"] += 1
-
-#         except Exception:
-#             results["errors"] += 1
-
-#     return results
+    logger.info("Automatic payment mapping completed: %s", results)
+    return results
