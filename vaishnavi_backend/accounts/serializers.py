@@ -17,15 +17,16 @@ from django.contrib.auth.password_validation import validate_password
 
 # ---------------------- Entity mini Serializer ----------------------
 class VenueMiniSerializer(serializers.ModelSerializer):
+    locality = serializers.CharField(source="location.locality",read_only=True)
     # location
     class Meta:
         model = Venue
-        fields = ["id", "name", "is_active"]
+        fields = ["id", "name", "locality", "is_active"]
 
 class ServiceMiniSerializer(serializers.ModelSerializer):
     class Meta:
         model = Service
-        fields = ["id", "name", "is_active"]
+        fields = ["id", "name","city", "is_active"]
 
 class ResourceMiniSerializer(serializers.ModelSerializer):
     class Meta:

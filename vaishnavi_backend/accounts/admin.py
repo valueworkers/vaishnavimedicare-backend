@@ -153,7 +153,7 @@ class EmployeeProfileAdmin(admin.ModelAdmin):
         "shift",
         "termination_reason",
         "termination_type",
-        "user__date_joined",
+        "user_date_joined",
         "last_working_day",
     ]
     list_filter = [
@@ -182,14 +182,19 @@ class EmployeeProfileAdmin(admin.ModelAdmin):
     fieldsets = (
         (None, {"fields": ("user", "employee_id", "category", "designation", )}),
         ("Org placement", {"fields": ("department", "cost_center", "grade")}),
-        ("Employment dates", {"fields": ("user__date_joined", "last_working_day", "rehired_status","termination_reason","termination_type")}),
+        ("Employment dates", {"fields": ("user_date_joined", "last_working_day", "rehired_status","termination_reason","termination_type")}),
         ("Shift", {"fields": ("shift", "shift_effective_from")}),
         ("Vendor", {"fields": ("vendor_name", "vendor_phone")}),
         ("Work profile", {"fields": ("order_types", "skills", "target_percent", "qc_required")}),
         ("Provident Fund", {"fields": ("pf_applicable", "pf_number", "uan_number")}),
         ("ESI", {"fields": ("esi_applicable", "esi_number", "esi_dispensary")}),
+        
     )
+    readonly_fields =["user_date_joined"]
 
+    @admin.display(description="Date Joined", ordering="user__date_joined")
+    def user_date_joined(self, obj):
+        return obj.user.date_joined
 
 # =====================================================================
 #  HIERARCHY
