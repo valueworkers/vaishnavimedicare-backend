@@ -548,7 +548,25 @@ class PrimaryOrderCreateSerializer(serializers.ModelSerializer):
         )
 
         return data
-    
+
+class PrimaryOrderUpdateSerializer(serializers.ModelSerializer):
+    """Edits that do NOT touch the schedule or package."""
+ 
+    class Meta:
+        model = PrimaryOrder
+        fields = ['client_address', 'auto_continue', 'discount_amount', 'premium_amount']
+ 
+    def validate(self, data):
+        if (
+            self.instance.booking_type == BookingType.CLIENT_SIDE
+            and 'client_address' in data
+            and not data['client_address']
+        ):
+            raise serializers.ValidationError(
+                {"client_address": "Client address is required for CLIENT_SIDE bookings."}
+            )
+        return data
+     
 class PaymentSerializer(serializers.ModelSerializer):
     """Serializer for Payment model"""
     patient_name = serializers.CharField(
@@ -687,7 +705,7 @@ class TotalInvoiceSerializer(serializers.ModelSerializer):
             booking_obj = secondary.primary_order
 
             return {
-                "order_id": booking_obj.order_id,
+                "order_id": secondary.order_id,
                 "venue": booking_obj.venue.name if booking_obj.venue else None,
                 "locality": booking_obj.venue.location.locality if booking_obj.venue else None,
                 "location": booking_obj.venue.location.full_address() if booking_obj.venue else None,
@@ -706,7 +724,7 @@ class TotalInvoiceSerializer(serializers.ModelSerializer):
                 return None
 
             return {
-                "order_id": booking_obj.order_id,
+                "order_id": ternary.order_id,
                 "venue": booking_obj.venue.name if booking_obj.venue else None,
                 "locality": booking_obj.venue.location.locality if booking_obj.venue else None,
                 "location": booking_obj.venue.location.full_address() if booking_obj.venue else None,

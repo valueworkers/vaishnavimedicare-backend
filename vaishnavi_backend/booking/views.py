@@ -491,7 +491,7 @@ class OrderViewSet(viewsets.ModelViewSet):
     - Cancelling orders (cascades to Secondary & Ternary)
     - Rescheduling orders (regenerates sub-orders)
     """
-
+    
     search_fields = [
         'patient__id',
         'patient__patient_id',
@@ -500,6 +500,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         'patient__first_name',
         'patient__last_name',
     ]
+    
     filterset_fields = {
         'patient': ['exact'],
         'package': ['exact'],
@@ -528,6 +529,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         'created_at',
         'updated_at',
     ]
+    
     ordering = ['-created_at']  # or '-created_at' — see note below
 
     # ── Queryset ───────────────────────────────────────────────────────────────
@@ -573,7 +575,6 @@ class OrderViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(service=service_id)
 
         return queryset
-
 
     # ── Serializer ─────────────────────────────────────────────────────────────
     def get_serializer_class(self):
@@ -640,73 +641,41 @@ class OrderViewSet(viewsets.ModelViewSet):
             status=status.HTTP_201_CREATED,
         )
 
-    # ── Update ─────────────────────────────────────────────────────────────────
+    # ── Update (non-schedule fields only) ──────────────────────────────────────
     @transaction.atomic
     def update(self, request, *args, **kwargs):
         """
-        Update PrimaryOrder and regenerate SecondaryOrders if schedule changes.
+        PUT/PATCH: edit client_address, auto_continue, discount, premium.
+        Schedule / package changes must go through reschedule_order.
         """
-        instance = self.get_object()
-        serializer = self.get_serializer(instance, data=request.data, partial=True)
+        order = self.get_object()
+        user = request.user
+        
+        price_fields = {'discount_amount', 'premium_amount'}
+        schedule_fields = {'package', 'start_datetime', 'end_datetime', 'dates', 'raw_dates'}
+        sent = set(request.data.keys())
+ 
+        if blocked := sent & schedule_fields:
+            raise DRFValidationError(
+                {f: "Use the reschedule_order endpoint to change the schedule or package."
+                 for f in blocked}
+            )
+ 
+        if user.is_customer and (sent & price_fields):
+            return Response(
+                {"detail": "Only staff can change discount or premium."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+ 
+        serializer = PrimaryOrderUpdateSerializer(order, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
-
-        validated = serializer.validated_data
-        raw_dates = request.data.get("dates")
-        package = validated.get('package', instance.package)
-        is_customer = request.user.is_customer
-
-        # Detect what changed — drives secondary regeneration
-        package_changed = 'package' in validated and validated['package'] != instance.package
-        dates_changed = bool(raw_dates) or 'start_datetime' in request.data or 'end_datetime' in request.data
-        needs_regeneration = dates_changed or package_changed
-
-        # Parse dates ONCE and reuse
-        parsed_dates = None
-        try:
-            if raw_dates:
-                parsed_dates = DateParser.parse_dates(package.period, raw_dates)
-                start_dt, end_dt = DateParser.extract_datetime_bounds(package.period, parsed_dates)
-                validated["start_datetime"] = start_dt
-                validated["end_datetime"] = end_dt
-        except ValidationError as e:
-            return Response(e.message_dict, status=status.HTTP_400_BAD_REQUEST)
-
-        # Primary status is always auto
-        if needs_regeneration and parsed_dates is None:
-            start_dt = validated.get('start_datetime', instance.start_datetime)
-            end_dt = validated.get('end_datetime', instance.end_datetime)
-            validated['status'] = auto_update_status(start_dt, end_dt)
-
-        primary_order = serializer.save()
-
-        # Secondary status depends on who is updating
-        secondary_status = BookingStatus.LOBBY if is_customer else None  # None = auto inside generator
-
-        if needs_regeneration:
-            try:
-                primary_order.secondary_orders.all().delete()
-
-                if parsed_dates is not None:
-                    primary_order.generate_secondary_from_random_dates(
-                        parsed_dates,
-                        secondary_status=secondary_status,
-                    )
-                    primary_order.status = auto_update_status(
-                        primary_order.start_datetime,
-                        primary_order.end_datetime,
-                    )
-                    primary_order.save(update_fields=["status"])
-                else:
-                    primary_order.generate_secondary_full_range_dates(
-                        secondary_status=secondary_status,
-                    )
-            except ValidationError as e:
-                return Response(e.message_dict, status=status.HTTP_400_BAD_REQUEST)
-
-        return Response(
-            PrimaryOrderSerializer(primary_order).data,
-            status=status.HTTP_200_OK
-        )
+        order = serializer.save()
+ 
+        if sent & price_fields:
+            order.recalculate_total()
+ 
+        return Response(PrimaryOrderSerializer(order).data)
+    
     # ── Add service (TernaryOrder) ──────────────────────────────────────────────
     @action(detail=True, methods=['post'])
     @transaction.atomic
@@ -727,13 +696,12 @@ class OrderViewSet(viewsets.ModelViewSet):
         """
         primary_order = self.get_object()
         user = request.user
-
-        # # Permission Check
-        # if not PermissionHelper.can_modify_order(user, primary_order):
-        #     return Response(
-        #         {"detail": "You do not have permission to modify this order."},
-        #         status=status.HTTP_403_FORBIDDEN
-        #     )
+        
+        if not any(user.is_superuser, user.is_owner):
+            return Response(
+                {"detail": "You do not have permission to modify this order."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         if primary_order.status == BookingStatus.CANCELLED:
             return Response(
@@ -784,11 +752,10 @@ class OrderViewSet(viewsets.ModelViewSet):
         primary_order = self.get_object()
         user = request.user
 
-        # FIX: Add missing permission check
-        if not PermissionHelper.can_modify_order(user, primary_order):
+        if not any(user.is_superuser, user.is_owner):
             return Response(
                 {"detail": "You do not have permission to modify this order."},
-                status=status.HTTP_403_FORBIDDEN
+                status=status.HTTP_403_FORBIDDEN,
             )
 
         new_package_id = request.data.get("package")
@@ -887,13 +854,13 @@ class OrderViewSet(viewsets.ModelViewSet):
         }
         """
         primary_order = self.get_object()
+        
         user = request.user
-
-        # Add permission check for consistency
-        if not PermissionHelper.can_modify_order(user, primary_order):
+        
+        if not any(user.is_superuser, user.is_owner):
             return Response(
                 {"detail": "You do not have permission to modify this order."},
-                status=status.HTTP_403_FORBIDDEN
+                status=status.HTTP_403_FORBIDDEN,
             )
 
         ternary_order_id = request.data.get('ternary_order_id')
@@ -937,7 +904,6 @@ class OrderViewSet(viewsets.ModelViewSet):
                 else:
                     ternary_order.status = BookingStatus.RESCHEDULED
                 
-                # FIX: Changed 'target' to 'ternary_order' (was undefined variable)
                 ternary_order.status_locked = True
 
                 if discount_amount is not None:
@@ -978,7 +944,6 @@ class OrderViewSet(viewsets.ModelViewSet):
         primary_order = self.get_object()
         user = request.user
 
-        # Add permission check
         if user.is_customer:
             return Response(
                 {"detail": "You do not have permission to modify this order."},

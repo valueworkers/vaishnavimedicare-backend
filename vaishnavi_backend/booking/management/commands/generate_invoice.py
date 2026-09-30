@@ -11,8 +11,8 @@ def handle_secondary_order_update(instance):
             instance.primary_order.recalculate_total()
 
         # Invoice generation
-        if instance.status =='FULFILLED':
-            TotalInvoice.create_or_update_for_secondary(instance)
+        # if instance.status =='FULFILLED':
+        TotalInvoice.create_or_update_for_secondary(instance)
 
     transaction.on_commit(_update)
 
@@ -22,8 +22,8 @@ class Command(BaseCommand):
 
     def handle(self, *args, **kwargs):
         orders = SecondaryOrder.objects.filter(
-            status='FULFILLED',
-            invoices__isnull=True
+            # status='FULFILLED',
+            invoices__isnull=False
         )
         total_invoices = TotalInvoice.objects.all()
         before_count = total_invoices.count()
@@ -32,8 +32,8 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(f"Total Number of  Invoices {total_invoices.count()}"))
         
         for i, order in enumerate(orders):
-            pass
+            # pass
             handle_secondary_order_update(order)
-            self.stdout.write(self.style.SUCCESS(f"{i}) {order.order_id} {order.invoices.first().invoice_number if order.invoices.first() else 'N/A'} is generated "))
+            # self.stdout.write(self.style.SUCCESS(f"{i}) {order.order_id} {order.invoices.first().invoice_number if order.invoices.first() else 'N/A'} is generated "))
         self.stdout.write(self.style.SUCCESS(f"Total Number of Invoices generated : {total_invoices.count()-before_count}"))
 

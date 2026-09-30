@@ -14,7 +14,6 @@ It provides end-to-end management including venue listings, complex order workfl
 
 
 ## Tech Stack
-
 | Layer | Technology |
 |---|---|
 | Backend Framework | Django 6.0.3 + Django REST Framework 3.17.1 |
