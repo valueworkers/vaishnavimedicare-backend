@@ -456,9 +456,9 @@ class EmployeeSerializer(ReportsToMixin, AssignmentsMixin, BaseUserSerializer):
     resources = serializers.SerializerMethodField()
  
     ALLOWED_USER_TYPES = {
-        CustomUser.UserType.VSRE_MANAGER,
-        CustomUser.UserType.LINE_MANAGER,
-        CustomUser.UserType.VSRE_STAFF,
+        CustomUser.UserTypes.VSRE_MANAGER,
+        CustomUser.UserTypes.LINE_MANAGER,
+        CustomUser.UserTypes.VSRE_STAFF,
     }
 
     class Meta(BaseUserSerializer.Meta):
@@ -486,6 +486,7 @@ class EmployeeSerializer(ReportsToMixin, AssignmentsMixin, BaseUserSerializer):
  
     @transaction.atomic
     def update(self, instance, validated_data):
+        validated_data.pop("user_type", None)  # immutable after creation
         profile_data = validated_data.pop("employee_profile", None)
         user = super().update(instance, validated_data)
  
