@@ -664,8 +664,9 @@ class CustomerRegistrationSerializer(BaseUserSerializer):
     """Public registration for customers."""
 
     def create(self, validated_data):
+        request = self.context.get("request")
         validated_data["user_type"] = "CUSTOMER"
-        validated_data["created_by"] = None
+        validated_data["created_by"] = if request and request.user.is_authenticated else None
         return super().create(validated_data)
 
 class OwnerRegistrationSerializer(BaseUserSerializer):
@@ -674,7 +675,7 @@ class OwnerRegistrationSerializer(BaseUserSerializer):
     def create(self, validated_data):
         request = self.context.get("request")
         validated_data["user_type"] = "VSRE_OWNER"
-        validated_data["created_by"] = None
+        validated_data["created_by"] = request.user if request and request.user.is_authenticated else None
         return super().create(validated_data)
 
 class UserLoginSerializer(serializers.Serializer):
