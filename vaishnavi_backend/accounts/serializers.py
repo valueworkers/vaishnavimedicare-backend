@@ -67,7 +67,7 @@ class BaseUserSerializer(serializers.ModelSerializer):
             "password",
             "confirm_password",
         ]
-        read_only_fields = ["id", "created_by"]
+        read_only_fields = ["id","user_type", "created_by"]
  
     # ---------------------- validation ----------------------
     def validate_email(self, value):
