@@ -455,6 +455,12 @@ class EmployeeSerializer(ReportsToMixin, AssignmentsMixin, BaseUserSerializer):
     services = serializers.SerializerMethodField()
     resources = serializers.SerializerMethodField()
  
+    ALLOWED_USER_TYPES = {
+        CustomUser.UserType.VSRE_MANAGER,
+        CustomUser.UserType.LINE_MANAGER,
+        CustomUser.UserType.VSRE_STAFF,
+    }
+
     class Meta(BaseUserSerializer.Meta):
         fields = BaseUserSerializer.Meta.fields + [
             "employee_profile",
@@ -463,9 +469,13 @@ class EmployeeSerializer(ReportsToMixin, AssignmentsMixin, BaseUserSerializer):
             "services",
             "resources",
         ]
- 
-    def validate_email(self, value):
-        return value or None
+
+        read_only_fields = ["id", "created_by"]
+
+    def validate_user_type(self, value):
+        if value not in self.ALLOWED_USER_TYPES:
+            raise serializers.ValidationError("Invalid user type for an employee.")
+        return value
  
     @transaction.atomic
     def create(self, validated_data):
