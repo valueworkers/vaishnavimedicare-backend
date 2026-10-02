@@ -332,10 +332,10 @@ class TernaryOrderSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'order_id', 'subtotal', 'created_at', 'updated_at']
 
 class SecondaryOrderSerializer(serializers.ModelSerializer):
-    """Read serializer for a SecondaryOrder (one period/month slot)."""
+    """Serializer for a SecondaryOrder (one period/month slot). Read + write."""
 
     ternary_orders = TernaryOrderSerializer(many=True, read_only=True)
-   
+
     service_name = serializers.SerializerMethodField()
     package_name = serializers.SerializerMethodField()
     location_locality = serializers.SerializerMethodField()
@@ -345,6 +345,7 @@ class SecondaryOrderSerializer(serializers.ModelSerializer):
         fields = [
             'id',
             'order_id',
+            'primary_order',
             'service_name',
             'package_name',
             'location_locality',
@@ -352,33 +353,108 @@ class SecondaryOrderSerializer(serializers.ModelSerializer):
             'end_datetime',
             'subtotal',
             'status',
+            'status_locked',
             'is_registration_fee',
             'ternary_orders',
             'created_at',
             'updated_at',
         ]
-        read_only_fields = ['id','service_name','package_name','location_locality', 'order_id', 'subtotal', 'created_at', 'updated_at']
-    
+        read_only_fields = [
+            'id', 'service_name', 'package_name', 'location_locality',
+            'order_id', 'subtotal', 'created_at', 'updated_at',
+            'status_locked',
+            'is_registration_fee',
+        ]
+        validators = []
+
+    # ── existing read helpers (unchanged) ──────────────────────────────────────
     def get_location_locality(self, obj):
-        primary_order = obj.primary_order        
+        primary_order = obj.primary_order
         if primary_order.venue:
             return primary_order.venue.location.locality
         return None
-    
+
     def get_service_name(self, obj):
         if obj.is_registration_fee:
-            return "Registration Fees"        
+            return "Registration Fees"
         elif obj.primary_order.service:
             return obj.primary_order.service.name
-        else: return None
-        
-    
+        else:
+            return None
+
     def get_package_name(self, obj):
         if obj.is_registration_fee:
             return "Registration Fees"
         elif obj.primary_order.package:
             return obj.primary_order.package.name
-        else: return None
+        else:
+            return None
+
+    # ── ADDED: validation ──────────────────────────────────────────────────────
+    def validate(self, attrs):
+        inst = self.instance
+
+        primary = attrs.get("primary_order", inst.primary_order if inst else None)
+        if primary is None:
+            raise serializers.ValidationError({"primary_order": "This field is required."})
+        if inst and primary.pk != inst.primary_order_id:
+            raise serializers.ValidationError(
+                {"primary_order": "A secondary order cannot be moved to another primary order."}
+            )
+        if inst and inst.is_registration_fee and (
+            "start_datetime" in attrs or "end_datetime" in attrs
+        ):
+            raise serializers.ValidationError("Registration-fee rows have no editable period.")
+
+        start = attrs.get("start_datetime", inst.start_datetime if inst else None)
+        end = attrs.get("end_datetime", inst.end_datetime if inst else None)
+        if start and end:
+            if start >= end:
+                raise serializers.ValidationError("Start must be before end.")
+            overlap = SecondaryOrder.objects.filter(
+                primary_order=primary,
+                is_registration_fee=False,
+                start_datetime__lt=end,
+                end_datetime__gt=start,
+            )
+            if inst:
+                overlap = overlap.exclude(pk=inst.pk)
+            if overlap.exists():
+                raise serializers.ValidationError(
+                    "This period overlaps an existing secondary order."
+                )
+        return attrs
+
+    # ── create / update ─────────────────────────────────────────────────
+    @transaction.atomic
+    def create(self, validated_data):
+        status = validated_data.pop("status", None)
+        obj = SecondaryOrder(**validated_data)
+        obj.is_registration_fee = False
+        obj.subtotal = obj.compute_base_amount()
+        if status:  # explicit status from the client pins it
+            obj.status = status
+            obj.status_locked = True
+        obj.save(skip_auto_status=bool(status))
+        return obj
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        status = validated_data.pop("status", None)
+        for field, value in validated_data.items():
+            setattr(instance, field, value)
+        if status:
+            instance.status = status
+            instance.status_locked = True
+
+        if not instance.is_registration_fee:
+            ternary_total = instance.ternary_orders.aggregate(
+                total=Coalesce(Sum("subtotal"), Decimal("0.00"))
+            )["total"]
+            instance.subtotal = instance.compute_base_amount() + ternary_total
+
+        instance.save(skip_auto_status=bool(status))
+        return instance
     
 class PrimaryOrderSerializer(serializers.ModelSerializer):
     """
@@ -386,7 +462,7 @@ class PrimaryOrderSerializer(serializers.ModelSerializer):
     and their TernaryOrders.
     """
 
-    secondary_orders = SecondaryOrderSerializer(many=True, read_only=True)
+    secondary_orders_count = serializers.SerializerMethodField()
 
     venue_name = serializers.CharField(
         source='venue.name',
@@ -433,7 +509,7 @@ class PrimaryOrderSerializer(serializers.ModelSerializer):
             'discount_amount',
             'premium_amount',
             # nested
-            'secondary_orders',
+            'secondary_orders_count',
             # timestamps
             'created_at',
             'updated_at',
@@ -459,7 +535,9 @@ class PrimaryOrderSerializer(serializers.ModelSerializer):
                 )
 
         return data
-    
+
+    def get_secondary_orders_count(self,obj):
+        return obj.secondary_orders.count()
 class PrimaryOrderCreateSerializer(serializers.ModelSerializer):
     """
     Write serializer for creating a PrimaryOrder.
@@ -549,23 +627,6 @@ class PrimaryOrderCreateSerializer(serializers.ModelSerializer):
 
         return data
 
-class PrimaryOrderUpdateSerializer(serializers.ModelSerializer):
-    """Edits that do NOT touch the schedule or package."""
- 
-    class Meta:
-        model = PrimaryOrder
-        fields = ['client_address', 'auto_continue', 'discount_amount', 'premium_amount']
- 
-    def validate(self, data):
-        if (
-            self.instance.booking_type == BookingType.CLIENT_SIDE
-            and 'client_address' in data
-            and not data['client_address']
-        ):
-            raise serializers.ValidationError(
-                {"client_address": "Client address is required for CLIENT_SIDE bookings."}
-            )
-        return data
      
 class PaymentSerializer(serializers.ModelSerializer):
     """Serializer for Payment model"""

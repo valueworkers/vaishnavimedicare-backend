@@ -1,16 +1,32 @@
 from django.db.models.signals import post_save,post_delete
 from django.dispatch import receiver
 from django.db import transaction
-from .models import SecondaryOrder,TernaryOrder, TotalInvoice, BookingStatus, Payment
+from .models import PrimaryOrder, SecondaryOrder,TernaryOrder, TotalInvoice, BookingStatus, Payment
 
+  
+@receiver([post_save, post_delete], sender=SecondaryOrder)
+def refresh_primary_from_secondary(sender, instance, **kwargs):
+    if kwargs.get("update_fields") == frozenset({"order_id"}):
+        return
+    primary_id = instance.primary_order_id
+    if not primary_id:
+        return
+ 
+    def _run():
+        primary = PrimaryOrder.objects.filter(pk=primary_id).first()  # may be cascade-deleted
+        if primary:
+            primary.refresh_from_secondaries()  # totals + status; dates left alone
+ 
+    transaction.on_commit(_run)
 
 @receiver(post_save, sender=Payment)
 def update_invoice_on_payment_save(sender, instance, **kwargs):
     """Recalculate invoice when payment is created or updated"""
     
     def _recalculate():
-        if instance.invoice:
-            instance.invoice.recalculate_payments()
+        invoice = getattr(instance, 'invoice', None)
+        if invoice:
+            invoice.recalculate_payments()
 
     transaction.on_commit(_recalculate)
 
@@ -20,9 +36,10 @@ def update_invoice_on_payment_delete(sender, instance, **kwargs):
     """
     Recalculate invoice totals when a payment is deleted.
     """
-    def _recalculate():
-        if instance.invoice:
-            instance.invoice.recalculate_payments()
+    def _recalculate():    
+        invoice = getattr(instance, 'invoice', None)
+        if invoice:
+            invoice.recalculate()   # whatever you call on line 25+
 
     transaction.on_commit(_recalculate)
 

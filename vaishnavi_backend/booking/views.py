@@ -17,6 +17,7 @@ from .utils import (
 from rest_framework import viewsets, permissions, status
 from .serializers import *
 from .constants import RAZORPAY_CLIENT
+from .permissions import IsOwnerOrReadOnly
 from .models import *
 from .filters import EntityFilter,PatientFilter
 from rest_framework.decorators import action
@@ -481,7 +482,7 @@ class PackageViewSet(viewsets.ModelViewSet):
         serializer = PackageSerializer(packages, many=True)
         return Response(serializer.data)
 
-class OrderViewSet(viewsets.ModelViewSet):
+class PrimaryOrderViewSet(viewsets.ModelViewSet):
     """
     ViewSet for managing primary orders.
 
@@ -532,9 +533,10 @@ class OrderViewSet(viewsets.ModelViewSet):
     
     ordering = ['-created_at']  # or '-created_at' — see note below
 
+    
     # ── Queryset ───────────────────────────────────────────────────────────────
-    def get_queryset(self):
-        queryset = (
+    def _base_queryset(self):
+        return (
             PrimaryOrder.objects.select_related(
                 'patient', 'venue', 'service', 'package', 'user'
             )
@@ -549,38 +551,106 @@ class OrderViewSet(viewsets.ModelViewSet):
             .exclude(status__in=(BookingStatus.LOBBY, BookingStatus.HOLD))
         )
 
+    def get_queryset(self):
+        queryset = self._base_queryset()
+
         user = self.request.user
         if user.is_customer:
             queryset = queryset.filter(user=user)
 
         now = timezone.now()
+        params = self.request.query_params
 
-        if start_date := self.request.query_params.get('start_date'):
+        if start_date := params.get('start_date'):
             queryset = queryset.filter(start_datetime__gte=start_date)
-
-        if end_date := self.request.query_params.get('end_date'):
+        if end_date := params.get('end_date'):
             queryset = queryset.filter(end_datetime__lte=end_date)
-
-        if self.request.query_params.get('upcoming'):
+        if params.get('upcoming'):
             queryset = queryset.filter(start_datetime__gt=now)
-
-        if self.request.query_params.get('ongoing'):
+        if params.get('ongoing'):
             queryset = queryset.filter(start_datetime__lte=now, end_datetime__gte=now)
-
-        if self.request.query_params.get('past_order'):
+        if params.get('past_order'):
             queryset = queryset.filter(end_datetime__lt=now)
-
-        service_id = self.request.query_params.get('service_id')
-        if service_id:
+        if service_id := params.get('service_id'):
             queryset = queryset.filter(service=service_id)
 
         return queryset
-
+    
     # ── Serializer ─────────────────────────────────────────────────────────────
     def get_serializer_class(self):
         if self.action in ('create', 'update'):
             return PrimaryOrderCreateSerializer
         return PrimaryOrderSerializer
+
+
+    # ── Shared helpers (used by create AND update) ─────────────────────────────
+    SCHEDULE_FIELDS = {'package', 'start_datetime', 'end_datetime', 'dates', 'raw_dates'}
+    PRICE_FIELDS = {'discount_amount', 'premium_amount'}
+    
+    def _require_owner(self, user):
+        if not (user.is_superuser or user.is_owner):
+            return Response({"detail": "You do not have permission to modify this order."},
+                            status=status.HTTP_403_FORBIDDEN)
+
+    @staticmethod
+    def _parse_aware(value, fallback):
+        if not value:
+            return fallback
+        dt = parse_datetime(value) if isinstance(value, str) else value
+        if dt is None:
+            raise ValidationError({"detail": f"Invalid datetime: {value!r}"})
+        return timezone.make_aware(dt) if timezone.is_naive(dt) else dt
+
+    def _resolve_schedule(self, order, data):
+        """
+        Work out the new schedule from the payload (nothing is written).
+        Returns (instance_kwargs, parsed_dates).
+        """
+        package = order.package
+        if package_id := data.get('package'):
+            package = Package.objects.get(id=package_id)
+
+        raw_dates = data.get('dates', data.get('raw_dates'))
+        parsed = None
+        if raw_dates:
+            parsed = DateParser.parse_dates(package.period, raw_dates)
+            start, end = DateParser.extract_datetime_bounds(package.period, parsed)
+        else:
+            start = self._parse_aware(data.get('start_datetime'), order.start_datetime)
+            end = self._parse_aware(data.get('end_datetime'), order.end_datetime)
+
+        if start >= end:
+            raise ValidationError({"detail": "Start date must be before end date."})
+
+        return {
+            'package': package,
+            'start_datetime': start,
+            'end_datetime': end,
+            'raw_dates': raw_dates if parsed else None,
+        }, parsed
+
+    @staticmethod
+    def _sync_secondaries(order, parsed_dates, *, status=None, prune=False):
+        """The one place secondaries are created/updated, for create and update alike."""
+        if parsed_dates is not None:
+            order.generate_secondary_from_random_dates(
+                parsed_dates, secondary_status=status, prune=prune
+            )
+        else:
+            order.generate_secondary_full_range_dates(
+                secondary_status=status, prune=prune
+            )
+
+        # ── Update one secondary order ─────────────────────────────────────────────
+    
+
+    @staticmethod
+    def _error(exc):
+        transaction.set_rollback(True)   # undo partial writes inside @transaction.atomic
+        return Response(
+            getattr(exc, 'message_dict', {"detail": exc.messages}),
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
     # ── Create ─────────────────────────────────────────────────────────────────
     @transaction.atomic
@@ -590,344 +660,168 @@ class OrderViewSet(viewsets.ModelViewSet):
 
         validated = serializer.validated_data
         validated['user'] = request.user
-        raw_dates = validated.get('raw_dates', [])
         package = validated['package']
 
         parsed_dates = None
         try:
-            if raw_dates:
+            if raw_dates := validated.get('raw_dates'):
                 parsed_dates = DateParser.parse_dates(package.period, raw_dates)
-                start_dt, end_dt = DateParser.extract_datetime_bounds(package.period, parsed_dates)
-                validated['start_datetime'] = start_dt
-                validated['end_datetime'] = end_dt
-        except ValidationError as e:
-            return Response(e.message_dict, status=status.HTTP_400_BAD_REQUEST)
+                validated['start_datetime'], validated['end_datetime'] = \
+                    DateParser.extract_datetime_bounds(package.period, parsed_dates)
 
-        validated['status'] = BookingStatus.LOBBY
-               
-        primary_order = serializer.save()
-        patient = primary_order.patient
+            validated['status'] = BookingStatus.LOBBY
+            primary_order = serializer.save()
+            patient = primary_order.patient
 
-        secondary_status = BookingStatus.LOBBY 
-
-        if not patient.is_registration_fees_paid and package.registration_fees > 0:
-            SecondaryOrder.objects.create(
-                primary_order=primary_order,
-                start_datetime=primary_order.start_datetime,
-                end_datetime=primary_order.start_datetime,
-                subtotal=package.registration_fees,
-                is_registration_fee=True,
-                status=secondary_status or auto_update_status(
-                    primary_order.start_datetime, primary_order.start_datetime
-                ),
-            )
-
-        try:
-            
-            if parsed_dates is not None:
-                primary_order.generate_secondary_from_random_dates(
-                    parsed_dates,
-                    secondary_status=secondary_status
+            if not patient.is_registration_fees_paid and package.registration_fees > 0:
+                SecondaryOrder.objects.create(
+                    primary_order=primary_order,
+                    start_datetime=primary_order.start_datetime,
+                    end_datetime=primary_order.start_datetime,
+                    subtotal=package.registration_fees,
+                    is_registration_fee=True,
+                    status=BookingStatus.LOBBY,
                 )
-            else:
-                primary_order.generate_secondary_full_range_dates(
-                    secondary_status=secondary_status
-                )
-        except ValidationError as e:
-            return Response(e.message_dict, status=status.HTTP_400_BAD_REQUEST)
 
-        return Response(
-            PrimaryOrderSerializer(primary_order).data,
-            status=status.HTTP_201_CREATED,
-        )
+            self._sync_secondaries(primary_order, parsed_dates, status=BookingStatus.LOBBY)
+        except ValidationError as exc:
+            return self._error(exc)
 
-    # ── Update (non-schedule fields only) ──────────────────────────────────────
+        return Response(PrimaryOrderSerializer(primary_order).data,
+                        status=status.HTTP_201_CREATED)
+
+    # ── Update ─────────────────────────────────────────────────────────────────
     @transaction.atomic
     def update(self, request, *args, **kwargs):
-        """
-        PUT/PATCH: edit client_address, auto_continue, discount, premium.
-        Schedule / package changes must go through reschedule_order.
-        """
         order = self.get_object()
-        user = request.user
-        
-        price_fields = {'discount_amount', 'premium_amount'}
-        schedule_fields = {'package', 'start_datetime', 'end_datetime', 'dates', 'raw_dates'}
-        sent = set(request.data.keys())
- 
-        if sent & schedule_fields:
-            return Response(
-                {"detail": "Schedule or package changes are not allowed here."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
- 
-        if user.is_customer and (sent & price_fields):
-            return Response(
-                {"detail": "Only staff can change discount or premium."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
- 
-        serializer = PrimaryOrderUpdateSerializer(order, data=request.data, partial=True)
-        serializer.is_valid(raise_exception=True)
-        order = serializer.save()
- 
-        if sent & price_fields:
-            order.recalculate_total()
- 
+        data = request.data
+        sent = set(data.keys())
+
+        if request.user.is_customer and (sent & self.PRICE_FIELDS):
+            return Response({"detail": "Only staff can change discount or premium."},
+                            status=status.HTTP_403_FORBIDDEN)
+
+        schedule_sent = bool(sent & self.SCHEDULE_FIELDS)
+        if schedule_sent and order.status == BookingStatus.CANCELLED:
+            return Response({"detail": "Cannot reschedule a cancelled order."},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            schedule, parsed = ({}, None)
+            if schedule_sent:
+                schedule, parsed = self._resolve_schedule(order, data)
+
+            other = {k: v for k, v in data.items() if k not in self.SCHEDULE_FIELDS}
+            serializer = PrimaryOrderCreateSerializer(order, data=other, partial=True)
+            serializer.is_valid(raise_exception=True)
+
+            # schedule values go straight onto the instance via save(**kwargs)
+            order = serializer.save(**schedule)
+
+            if schedule_sent or (sent & self.PRICE_FIELDS):
+                if not schedule_sent and order.raw_dates:
+                    # price-only change on a specific-dates booking: re-use stored dates
+                    parsed = DateParser.parse_dates(order.package.period, order.raw_dates)
+                self._sync_secondaries(order, parsed, prune=True)
+        except Package.DoesNotExist:
+            transaction.set_rollback(True)
+            return Response({"detail": "Invalid package."}, status=status.HTTP_400_BAD_REQUEST)
+        except ValidationError as exc:
+            return self._error(exc)
+
+        order = self._base_queryset().get(pk=order.pk)   # fresh prefetch
         return Response(PrimaryOrderSerializer(order).data)
-    
-    # ── Add service (TernaryOrder) ──────────────────────────────────────────────
-    @action(detail=True, methods=['post'])
+
+    # ── Ternary: create & update ────────────────────────────────────────────────────────
+    @action(detail=True, methods=['post'], url_path="create-ternary-service")
     @transaction.atomic
-    def add_service(self, request, pk=None):
-        """
-        Add a service as a TernaryOrder under the appropriate SecondaryOrder.
-
-        Payload:
-        {
-            "venue": 13,
-            "service": 5,
-            "package": 2,
-            "start_datetime": "2026-02-05T10:00:00Z",
-            "end_datetime": "2026-02-05T11:00:00Z",
-            "discount_amount": "100.00",
-            "premium_amount": "50.00"
-        }
-        """
+    def add_ternary_service(self, request, pk=None):
         primary_order = self.get_object()
-        user = request.user
-        
-        if not any(user.is_superuser, user.is_owner):
-            return Response(
-                {"detail": "You do not have permission to modify this order."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-
+        if denied := self._require_owner(request.user):
+            return denied
         if primary_order.status == BookingStatus.CANCELLED:
-            return Response(
-                {"message": "Cannot add a service to a cancelled order."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return Response({"message": "Cannot add a service to a cancelled order."},
+                            status=status.HTTP_400_BAD_REQUEST)
 
         serializer = TernaryOrderCreateSerializer(
-            data=request.data,
-            context={"primary_order": primary_order}
+            data=request.data, context={"primary_order": primary_order}
         )
         serializer.is_valid(raise_exception=True)
 
-        start_dt = serializer.validated_data['start_datetime']
-        end_dt = serializer.validated_data['end_datetime']
-
-        # Resolve the matching SecondaryOrder - FIX: Use helper method with proper exception
         try:
-            secondary_order = SecondaryOrderHelper.get_matching_secondary_order(
-                primary_order, start_dt, end_dt
+            secondary = SecondaryOrderHelper.get_matching_secondary_order(
+                primary_order,
+                serializer.validated_data['start_datetime'],
+                serializer.validated_data['end_datetime'],
             )
         except SecondaryOrder.DoesNotExist as e:
-            return Response(
-                {"message": str(e)},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        ternary_order = serializer.save(secondary_order=secondary_order)
-
-        # Recalculate subtotals up the chain
-        secondary_order.recalculate_subtotal()
-        primary_order.recalculate_total()
-
-        response_serializer = TernaryOrderSerializer(ternary_order)
-        return Response(response_serializer.data, status=status.HTTP_201_CREATED)
-
-    # ── Reschedule Order ───────────────────────────────────────────────────────
-    @action(detail=True, methods=["post"])
-    @transaction.atomic
-    def reschedule_order(self, request, pk=None):
-        """
-        Reschedule a PrimaryOrder with new dates/package.
-        
-        Two modes:
-        - Full range: start_datetime + end_datetime
-        - Specific dates: dates (list for DAILY, dict for HOURLY)
-        """
-        primary_order = self.get_object()
-        user = request.user
-
-        if not any(user.is_superuser, user.is_owner):
-            return Response(
-                {"detail": "You do not have permission to modify this order."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-
-        new_package_id = request.data.get("package")
-        discount_amount = Decimal(request.data.get("discount_amount", "0"))
-        premium_amount = Decimal(request.data.get("premium_amount", "0"))
-        raw_dates = request.data.get("dates")
-
-        # Determine package & period type        
-        package = primary_order.package
-        if new_package_id:
-            from .models import Package
-            package = Package.objects.get(id=new_package_id)
-
-        period_type = package.period
-
-        try:
-            # MODE 1: Specific Dates / Slots
-            if raw_dates:
-                try:
-                    parsed = DateParser.parse_dates(period_type, raw_dates)
-                    new_start, new_end = DateParser.extract_datetime_bounds(period_type, parsed)
-                except ValidationError as e:
-                    return Response(e.message_dict, status=status.HTTP_400_BAD_REQUEST)
-
-                primary_order.reschedule(
-                    new_start,
-                    new_end,
-                    new_package_id,
-                    discount_amount,
-                    premium_amount,
-                )
-
-                # Delete auto-generated ones
-                primary_order.secondary_orders.all().delete()
-
-                # Generate specific ones
-                primary_order.generate_secondary_from_random_dates(parsed)
-
-            # MODE 2: Full Range
-            else:
-                new_start_raw = request.data.get("start_datetime")
-                new_end_raw = request.data.get("end_datetime")
-
-                if not new_start_raw or not new_end_raw:
-                    raise ValidationError(
-                        {"detail": "'start_datetime' and 'end_datetime' are required."}
-                    )
-
-                new_start = parse_datetime(new_start_raw)
-                new_end = parse_datetime(new_end_raw)
-
-                if not new_start or not new_end:
-                    raise ValidationError(
-                        {"detail": "Invalid datetime format."}
-                    )
-
-                if timezone.is_naive(new_start):
-                    new_start = timezone.make_aware(new_start)
-                if timezone.is_naive(new_end):
-                    new_end = timezone.make_aware(new_end)
-
-                primary_order.reschedule(
-                    new_start,
-                    new_end,
-                    new_package_id,
-                    discount_amount,
-                    premium_amount,
-                )
-
-        except ValidationError:
-            raise
-        except Exception as e:
-            return Response(
-                {"detail": f"Invalid input: {str(e)}"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        serializer = PrimaryOrderSerializer(primary_order)
-        return Response(serializer.data)
-
-    # ── Reschedule Service ─────────────────────────────────────────────────────
-    @action(detail=True, methods=['post'])
-    @transaction.atomic
-    def reschedule_service(self, request, pk=None):
-        """
-        Reschedule a single TernaryOrder and recalculate parent totals.
-
-        Payload:
-        {
-            "ternary_order_id": 5,
-            "start_datetime": "2026-02-10T10:00:00Z",
-            "end_datetime": "2026-02-10T12:00:00Z",
-            "package": 2,               # optional
-            "discount_amount": 0.0,     # optional
-            "premium_amount": 0.0       # optional
-        }
-        """
-        primary_order = self.get_object()
-        
-        user = request.user
-        
-        if not any(user.is_superuser, user.is_owner):
-            return Response(
-                {"detail": "You do not have permission to modify this order."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-
-        ternary_order_id = request.data.get('ternary_order_id')
-        new_start = request.data.get('start_datetime')
-        new_end = request.data.get('end_datetime')
-        new_package = request.data.get('package')
-        discount_amount = request.data.get('discount_amount', Decimal('0'))
-        premium_amount = request.data.get('premium_amount', Decimal('0'))
-
-        if not new_start or not new_end:
-            return Response(
-                {"message": "'start_datetime' and 'end_datetime' are required."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        try:
-            ternary_order = TernaryOrder.objects.get(
-                id=ternary_order_id,
-                secondary_order__primary_order=primary_order
-            )
-        except TernaryOrder.DoesNotExist:
-            return Response(
-                {"message": "Service (TernaryOrder) not found under this order."},
-                status=status.HTTP_404_NOT_FOUND
-            )
-
-        try:
-            new_start_dt = parse_datetime(new_start)
-            new_end_dt = parse_datetime(new_end)
-
-            if not new_start_dt or not new_end_dt:
-                raise ValueError("Invalid datetime format.")
-
-            with transaction.atomic():
-                ternary_order.start_datetime = new_start_dt
-                ternary_order.end_datetime = new_end_dt
-
-                if new_package:
-                    ternary_order.package_id = new_package
-                    ternary_order.status = BookingStatus.MODIFIED
-                else:
-                    ternary_order.status = BookingStatus.RESCHEDULED
-                
-                ternary_order.status_locked = True
-
-                if discount_amount is not None:
-                    ternary_order.discount_amount = discount_amount
-                if premium_amount is not None:
-                    ternary_order.premium_amount = premium_amount
-                
-                ternary_order.save()
-
-                ternary_order.secondary_order.recalculate_subtotal()
-                primary_order.recalculate_total()
-
-        except ValidationError as e:
             return Response({"message": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-        except (ValueError, TypeError) as e:
-            return Response(
-                {"message": f"Invalid input: {str(e)}"},
-                status=status.HTTP_400_BAD_REQUEST
+
+        ternary = serializer.save(secondary_order=secondary)
+        secondary.recalculate_subtotal()          # also recalculates primary total
+
+        return Response(TernaryOrderSerializer(ternary).data, status=status.HTTP_201_CREATED)
+
+    # ── Ternary: update ────────────────────────────────────────────────────────
+    @action(detail=True, methods=['patch', 'post'],url_path="update-ternary-service")
+    @transaction.atomic
+    def update_ternary_service(self, request, pk=None):
+        """
+        Payload: {"ternary_order_id": 5, "start_datetime": ..., "end_datetime": ...,
+                  "package": 2, "venue": 1, "service": 5,
+                  "discount_amount": "0.00", "premium_amount": "0.00"}   # all but id optional
+        """
+        primary_order = self.get_object()
+        if denied := self._require_owner(request.user):
+            return denied
+
+        try:
+            ternary = TernaryOrder.objects.select_related('secondary_order').get(
+                id=request.data.get('ternary_order_id'),
+                secondary_order__primary_order=primary_order,
             )
+        except (TernaryOrder.DoesNotExist, ValueError, TypeError):
+            return Response({"message": "Service (TernaryOrder) not found under this order."},
+                            status=status.HTTP_404_NOT_FOUND)
 
-        serializer = TernaryOrderSerializer(ternary_order)
-        return Response(serializer.data)
+        old_secondary = ternary.secondary_order
+        data = request.data
 
-    # ── Status Change ──────────────────────────────────────────────────────────
+        try:
+            ternary.start_datetime = self._parse_aware(data.get('start_datetime'), ternary.start_datetime)
+            ternary.end_datetime = self._parse_aware(data.get('end_datetime'), ternary.end_datetime)
+            if ternary.start_datetime >= ternary.end_datetime:
+                raise ValidationError("Start must be before end.")
+
+            for field in ('package', 'venue', 'service'):
+                if field in data:
+                    setattr(ternary, f'{field}_id', data[field] or None)
+            for field in ('discount_amount', 'premium_amount'):
+                if data.get(field) is not None:
+                    setattr(ternary, field, Decimal(str(data[field])))
+
+            # may now belong to a different period
+            new_secondary = SecondaryOrderHelper.get_matching_secondary_order(
+                primary_order, ternary.start_datetime, ternary.end_datetime
+            )
+            ternary.secondary_order = new_secondary
+            ternary.status = BookingStatus.MODIFIED if 'package' in data else BookingStatus.RESCHEDULED
+            ternary.status_locked = True
+            ternary.save(skip_auto_status=True)   # save() recomputes subtotal; keeps our status
+        except SecondaryOrder.DoesNotExist as e:
+            transaction.set_rollback(True)
+            return Response({"message": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except (ValidationError, ValueError, TypeError, ArithmeticError) as e:
+            transaction.set_rollback(True)
+            return Response({"message": f"Invalid input: {e}"}, status=status.HTTP_400_BAD_REQUEST)
+
+        new_secondary.recalculate_subtotal()
+        if old_secondary.pk != new_secondary.pk:
+            old_secondary.recalculate_subtotal()
+
+        return Response(TernaryOrderSerializer(ternary).data)
+    
+    # ── Status Change ─────────────────────────────────────────────────────────
     @action(detail=True, methods=['patch'])
     @transaction.atomic
     def change_status(self, request, pk=None):
@@ -1032,6 +926,77 @@ class OrderViewSet(viewsets.ModelViewSet):
         primary_order = self.get_object()
         serializer = PrimaryOrderSerializer(primary_order)
         return Response(serializer.data)
+
+class SecondaryOrderViewSet(viewsets.ModelViewSet):
+    """
+    /secondary-orders/?primary_order=<id>&status=<s>&from=<iso>&to=<iso>
+    Every write refreshes the parent PrimaryOrder (total_bill, status, date range).
+    """
+    serializer_class = SecondaryOrderSerializer
+    permission_classes = [IsOwnerOrReadOnly]
+    pagination_class = None
+    
+    filterset_fields = {
+        "primary_order": ["exact"],
+        "primary_order__patient": ["exact"],
+        "status": ["exact", "in"],
+        "start_datetime": ["exact", "gte", "lte"],
+        "end_datetime": ["exact", "gte", "lte"],
+    }
+
+    search_fields = [
+        "primary_order__patient__first_name",
+        "primary_order__patient__last_name",
+        "primary_order__patient__patient_id",
+        "primary_order__service__name",
+        "primary_order__package__name",
+        "primary_order__venue__name",
+        "primary_order__venue__location__locality",
+    ]
+
+ 
+    def get_queryset(self):
+        qs = (
+            SecondaryOrder.objects
+            .select_related(
+                "primary_order__package",
+                "primary_order__service",
+                "primary_order__venue__location",   # used by location_locality
+            )
+            .prefetch_related("ternary_orders")      # nested TernaryOrderSerializer
+            .annotate(ternary_count=Count("ternary_orders"))
+        )
+ 
+        p = self.request.query_params
+        if p.get("primary_order"):
+            qs = qs.filter(primary_order_id=p["primary_order"])
+        if p.get("status"):
+            qs = qs.filter(status=p["status"])
+        if p.get("from"):
+            qs = qs.filter(end_datetime__gte=p["from"])
+        if p.get("to"):
+            qs = qs.filter(start_datetime__lte=p["to"])
+        return qs
+ 
+    @transaction.atomic
+    def perform_create(self, serializer):
+        obj = serializer.save()
+        obj.primary_order.refresh_from_secondaries(sync_dates=True)
+ 
+    @transaction.atomic
+    def perform_update(self, serializer):
+        obj = serializer.save()
+        obj.primary_order.refresh_from_secondaries(sync_dates=True)
+ 
+    @transaction.atomic
+    def perform_destroy(self, instance):
+        if instance.is_registration_fee:
+            raise ValidationError("The registration-fee row cannot be deleted.")
+        if instance.ternary_count:  # same rule _sync_secondary_orders enforces
+            raise ValidationError("Move or cancel the services on this period first.")
+        primary = instance.primary_order
+        instance.delete()
+        primary.refresh_from_secondaries(sync_dates=True)
 
 class LobbyOrderViewSet(viewsets.ModelViewSet):
     search_fields = [

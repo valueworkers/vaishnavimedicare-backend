@@ -1,5 +1,5 @@
 from django.db import models,transaction
-from django.db.models import Sum, Count
+from django.db.models import Sum, Count,Min,Max
 from django.db.models.functions import Coalesce
 from django.core.validators import MinValueValidator, MaxValueValidator, RegexValidator
 from django.core.exceptions import ValidationError
@@ -592,13 +592,13 @@ class PrimaryOrder(models.Model):
     def _sync_secondary_orders(self, periods, *, status=None, upcoming_only=False, prune=False):
         """
         Reconcile this order's SecondaryOrders with `periods`.
-          - missing periods are created
-          - existing periods keep their row (ternary orders, invoices, order_id)
-            and get subtotal = amount + sum(ternary subtotals); status is only
-            recomputed when it isn't locked
-          - prune=True removes future periods that are no longer wanted, but
-            refuses if one still has services. Past periods and the
-            registration-fee row are never touched.
+        - exact (start, end) match  -> row is updated in place
+        - on update (prune=True), unmatched existing rows are RE-DATED onto the
+            unmatched new periods (in date order), so a schedule change moves the
+            old row instead of creating a duplicate
+        - extra new periods are created
+        - leftover old rows: future ones are removed (refused if they have
+            services); past ones and the registration-fee row are never touched
         """
         now = timezone.now()
         if upcoming_only:
@@ -610,58 +610,75 @@ class PrimaryOrder(models.Model):
             existing = {
                 (s.start_datetime, s.end_datetime): s
                 for s in self.secondary_orders.filter(is_registration_fee=False).annotate(
-                    ternary_total=Coalesce(
-                        Sum("ternary_orders__subtotal"), Decimal("0.00")
-                    ),
+                    ternary_total=Coalesce(Sum("ternary_orders__subtotal"), Decimal("0.00")),
                     ternary_count=Count("ternary_orders"),
                 )
             }
 
             to_create, to_update = [], []
+            matched, unmatched_new = set(), []
+
+            def apply(row, start, end, amount):
+                row.start_datetime = start
+                row.end_datetime = end
+                row.subtotal = amount + row.ternary_total
+                if not row.status_locked:
+                    row.status = status or auto_update_status(start, end)
+                to_update.append(row)
+
+            # 1. exact matches
             for start, end, amount in periods:
-                new_status = status or auto_update_status(start, end)
                 current = existing.get((start, end))
-
                 if current is None:
-                    to_create.append(
-                        SecondaryOrder(
-                            primary_order=self,
-                            start_datetime=start,
-                            end_datetime=end,
-                            subtotal=amount,
-                            status=new_status,
-                        )
-                    )
-                    continue
+                    unmatched_new.append((start, end, amount))
+                else:
+                    matched.add(current.pk)
+                    apply(current, start, end, amount)
 
-                current.subtotal = amount + current.ternary_total
-                if not current.status_locked:
-                    current.status = new_status
-                to_update.append(current)
-
+            # 2. re-date orphaned rows onto the new periods (update path only)
+            orphans = sorted(
+                (s for s in existing.values() if s.pk not in matched),
+                key=lambda s: s.start_datetime,
+            )
             if prune and not upcoming_only:
-                wanted = {(s, e) for s, e, _ in periods}
-                stale = [
-                    s for key, s in existing.items()
-                    if key not in wanted and s.end_datetime >= now
-                ]
+                still_new = []
+                for start, end, amount in unmatched_new:
+                    if orphans:
+                        apply(orphans.pop(0), start, end, amount)
+                    else:
+                        still_new.append((start, end, amount))
+                unmatched_new = still_new
+
+                # 3. whatever is left over: drop future rows, keep past ones
+                stale = [s for s in orphans if s.end_datetime >= now]
                 if blocked := [s for s in stale if s.ternary_count]:
-                    dates = ", ".join(
-                        s.start_datetime.date().isoformat() for s in blocked
-                    )
+                    dates = ", ".join(s.start_datetime.date().isoformat() for s in blocked)
                     raise ValidationError(
                         f"Move or cancel the services on these periods first: {dates}."
                     )
                 SecondaryOrder.objects.filter(pk__in=[s.pk for s in stale]).delete()
+                
+            # 4. create the rest
+            for start, end, amount in unmatched_new:
+                to_create.append(
+                    SecondaryOrder(
+                        primary_order=self,
+                        start_datetime=start,
+                        end_datetime=end,
+                        subtotal=amount,
+                        status=status or auto_update_status(start, end),
+                    )
+                )
 
+            if to_update:
+                SecondaryOrder.objects.bulk_update(
+                    to_update, ["start_datetime", "end_datetime", "subtotal", "status"]
+                )
             if to_create:
                 created = SecondaryOrder.objects.bulk_create(to_create)
                 for obj in created:
                     obj.order_id = generate_order_id(obj)
                 SecondaryOrder.objects.bulk_update(created, ["order_id"])
-
-            if to_update:
-                SecondaryOrder.objects.bulk_update(to_update, ["subtotal", "status"])
 
             self.recalculate_total()
 
@@ -708,43 +725,64 @@ class PrimaryOrder(models.Model):
             self.end_datetime = new_end
             self.save(update_fields=["end_datetime"])
             self.generate_secondary_full_range_dates(upcoming_only=True)
-    
-    # ── Actions ────────────────────────────────────────────────────────────────
-    def reschedule(
-        self, new_start, new_end, new_package_id=None,
-        discount_amount=None, premium_amount=None,
-        dates=None, raw_dates=None,
-    ):
-        """`dates` = parsed specific dates/slots; omit for a full-range reschedule."""
-        now = timezone.now()
-
-        if new_start >= new_end:
-            raise ValidationError("Start date must be before end date.")
-        if self.end_datetime < now:
-            raise ValidationError("Past bookings cannot be rescheduled.")
-
-        is_ongoing = self.start_datetime <= now <= self.end_datetime
-        if is_ongoing and new_start != self.start_datetime:
-            raise ValidationError("Cannot change start date of an in-progress booking.")
-
-        with transaction.atomic():
-            self.start_datetime = new_start
-            self.end_datetime = new_end
-            self.raw_dates = raw_dates if dates else None
-
-            if new_package_id:
-                self.package_id = new_package_id
-            if discount_amount is not None:
-                self.discount_amount = discount_amount
-            if premium_amount is not None:
-                self.premium_amount = premium_amount
-
-            self.save()
-
-            if dates:
-                self.generate_secondary_from_random_dates(dates, prune=True)
-            else:
-                self.generate_secondary_full_range_dates(prune=True)
+  
+    def _derive_status_from_secondaries(self):
+        """
+        Roll period statuses up into one primary status.
+        ADJUST CANCELLED / COMPLETED / ONGOING to your BookingStatus members.
+        """
+        S = BookingStatus
+        statuses = list(
+            self.secondary_orders.filter(is_registration_fee=False)
+            .order_by("start_datetime")
+            .values_list("status", flat=True)
+        )
+        if not statuses:
+            return self.status
+ 
+        active = [s for s in statuses if s != S.CANCELLED]
+        if not active:
+            return S.CANCELLED
+ 
+        if all(s == S.COMPLETED for s in active):
+            # auto_continue orders get a new period nightly -> never "complete"
+            return S.ONGOING if self.auto_continue else S.COMPLETED
+ 
+        if any(s in (S.ONGOING, S.COMPLETED) for s in active):
+            return S.ONGOING
+ 
+        return active[0]  # nothing started yet -> status of the first period
+ 
+    def refresh_from_secondaries(self, sync_dates=False):
+        """
+        Secondary -> Primary direction (the reverse of _sync_secondary_orders).
+          - total_bill : via your existing recalculate_total()
+          - status     : rolled up from secondaries (skipped if status_locked)
+          - start/end  : min(start)/max(end) of period rows, only if sync_dates
+        Writes with queryset.update(), so PrimaryOrder.save() is never re-entered.
+        """
+        self.recalculate_total()
+ 
+        updates = {}
+        if sync_dates:
+            agg = self.secondary_orders.filter(is_registration_fee=False).aggregate(
+                first=Min("start_datetime"), last=Max("end_datetime")
+            )
+            if agg["first"] and agg["last"]:
+                updates["start_datetime"] = agg["first"]
+                updates["end_datetime"] = agg["last"]
+ 
+        if not self.status_locked:
+            new_status = self._derive_status_from_secondaries()
+            if new_status != self.status:
+                updates["status"] = new_status
+ 
+        if updates:
+            updates["updated_at"] = timezone.now()
+            PrimaryOrder.objects.filter(pk=self.pk).update(**updates)
+            for field, value in updates.items():
+                setattr(self, field, value)
+ 
     # ── Period helpers ─────────────────────────────────────────────────────────
     def _get_monthly_periods(self):
         """
@@ -863,39 +901,40 @@ class SecondaryOrder(models.Model):
         )
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
+    def compute_base_amount(self):
+        """Same pricing rules _sync_secondary_orders uses."""
+        po = self.primary_order
+        adjust = po.premium_amount - po.discount_amount
+        if po.raw_dates:  # specific dates/slots -> priced per row
+            base = calculate_amount(self.start_datetime, self.end_datetime, po.package)
+        else:             # full range -> flat package price
+            base = po.package.price
+        return base + adjust
 
     def save(self, *args, **kwargs):
         skip_auto_status = kwargs.pop("skip_auto_status", False)
-        skip_primary_recalc = kwargs.pop("skip_primary_recalc", False)
-
-        update_fields = kwargs.get("update_fields")
-        is_targeted_save = update_fields is not None
-
-        if not is_targeted_save and not skip_auto_status:
+        kwargs.pop("skip_primary_recalc", None)  # popped before, never used
+ 
+        is_targeted_save = kwargs.get("update_fields") is not None
+ 
+        if not is_targeted_save and not skip_auto_status and not self.status_locked:
             self.status = auto_update_status(self.start_datetime, self.end_datetime)
-
+ 
         super().save(*args, **kwargs)
-
+ 
         if not self.order_id:
             self.order_id = generate_order_id(self)
             super().save(update_fields=["order_id"])
 
     # ── Calculations ───────────────────────────────────────────────────────────
     def recalculate_subtotal(self):
-        """
-        Recompute subtotal as: base_price + Sum(TernaryOrder.subtotal)
-        Then cascade up to PrimaryOrder and sideways to TotalInvoice.
-        """
-        base_price = self.primary_order.package.price
         ternary_total = self.ternary_orders.aggregate(
             total=Coalesce(Sum("subtotal"), Decimal("0.00"))
         )["total"]
-
-        self.subtotal = base_price + ternary_total
+        self.subtotal = self.compute_base_amount() + ternary_total
         super().save(update_fields=["subtotal"])
-
         if self.primary_order_id:
-            self.primary_order.recalculate_total()
+            self.primary_order.refresh_from_secondaries()
 
 class TernaryOrder(models.Model):
     """One record per service/booking line item within a SecondaryOrder."""
