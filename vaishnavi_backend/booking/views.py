@@ -655,10 +655,10 @@ class OrderViewSet(viewsets.ModelViewSet):
         schedule_fields = {'package', 'start_datetime', 'end_datetime', 'dates', 'raw_dates'}
         sent = set(request.data.keys())
  
-        if blocked := sent & schedule_fields:
-            raise DRFValidationError(
-                {f: "Use the reschedule_order endpoint to change the schedule or package."
-                 for f in blocked}
+        if sent & schedule_fields:
+            return Response(
+                {"detail": "Schedule or package changes are not allowed here."},
+                status=status.HTTP_400_BAD_REQUEST,
             )
  
         if user.is_customer and (sent & price_fields):

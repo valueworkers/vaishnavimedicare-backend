@@ -1,5 +1,5 @@
 from django.db import models,transaction
-from django.db.models import Sum
+from django.db.models import Sum, Count
 from django.db.models.functions import Coalesce
 from django.core.validators import MinValueValidator, MaxValueValidator, RegexValidator
 from django.core.exceptions import ValidationError
@@ -547,149 +547,151 @@ class PrimaryOrder(models.Model):
         self.recalculate_total()
         
     # ── Sub-order generation ───────────────────────────────────────────────────
-    def generate_secondary_from_random_dates(self, dates, upcoming_only=False, secondary_status=None):
-        if not dates:
-            return
-
-        now = timezone.now()
+    def _periods_from_dates(self, dates):
+        """[(start, end, amount)] for a DAILY list or HOURLY dict selection."""
         period_type = self.package.period
+        adjust = self.premium_amount - self.discount_amount
 
-        with transaction.atomic():
-            objects = []
+        if period_type == PeriodChoices.DAILY and isinstance(dates, list):
+            bounds = [
+                (datetime.combine(d, time.min), datetime.combine(d, time.max))
+                for d in dates
+            ]
+        elif period_type == PeriodChoices.HOURLY and isinstance(dates, dict):
+            bounds = [
+                (datetime.combine(d, min(slots)), datetime.combine(d, max(slots)))
+                for d, slots in dates.items()
+                if slots
+            ]
+        else:
+            return []
 
-            # DAILY
-            if period_type == PeriodChoices.DAILY and isinstance(dates, list):
-                for d in dates:
-                    start_dt = timezone.make_aware(datetime.combine(d, time.min))
-                    end_dt   = timezone.make_aware(datetime.combine(d, time.max))
-
-                    if upcoming_only and end_dt < now:
-                        continue
-
-                    objects.append(
-                        SecondaryOrder(
-                            primary_order=self,
-                            start_datetime=start_dt,
-                            end_datetime=end_dt,
-                            status=secondary_status or auto_update_status(start_dt, end_dt),  # ← 
-                            subtotal=(
-                                (calculate_amount(start_dt, end_dt, self.package)
-                                + self.premium_amount)
-                                - self.discount_amount
-                            ),
-                        )
-                    )
-
-            # HOURLY
-            elif period_type == PeriodChoices.HOURLY and isinstance(dates, dict):
-                for date, slots in dates.items():
-                    if not slots:
-                        continue
-
-                    start_dt = timezone.make_aware(datetime.combine(date, min(slots)))
-                    end_dt   = timezone.make_aware(datetime.combine(date, max(slots)))
-
-                    if upcoming_only and end_dt < now:
-                        continue
-
-                    objects.append(
-                        SecondaryOrder(
-                            primary_order=self,
-                            start_datetime=start_dt,
-                            end_datetime=end_dt,
-                            status=secondary_status or auto_update_status(start_dt, end_dt),  # ←
-                            subtotal=(
-                                (calculate_amount(start_dt, end_dt, self.package)
-                                + self.premium_amount)
-                                - self.discount_amount
-                            ),
-                        )
-                    )
-
-            if not objects:
-                return
-
-            SecondaryOrder.objects.bulk_create(
-                objects,
-                update_conflicts=True,
-                unique_fields=["primary_order", "start_datetime", "end_datetime"],
-                update_fields=["subtotal", "status"],
+        periods = []
+        for start, end in bounds:
+            start, end = timezone.make_aware(start), timezone.make_aware(end)
+            periods.append(
+                (start, end, calculate_amount(start, end, self.package) + adjust)
             )
+        return periods
 
-            updated_secondaries = list(
-                SecondaryOrder.objects.filter(
-                    primary_order=self,
-                    start_datetime__in=[obj.start_datetime for obj in objects],
-                )
-            )
-
-            for obj in updated_secondaries:
-                if not obj.order_id:
-                    obj.order_id = generate_order_id(obj)
-
-            SecondaryOrder.objects.bulk_update(updated_secondaries, ["order_id"])
-            self.recalculate_total()
-
-    def generate_secondary_full_range_dates(self, upcoming_only=False, secondary_status=None):
-        now = timezone.now()
-        period_type = self.package.period
-        pkg_price   = self.package.price
-        final_price = (pkg_price + self.premium_amount) - self.discount_amount
-
-        period_generators = {
+    def _periods_full_range(self):
+        """[(start, end, amount)] covering start_datetime -> end_datetime."""
+        generators = {
             PeriodChoices.MONTHLY: self._get_monthly_periods,
             PeriodChoices.WEEKLY:  self._get_weekly_periods,
             PeriodChoices.DAILY:   self._get_daily_periods,
             PeriodChoices.HOURLY:  self._get_daily_periods,
         }
-
-        generator = period_generators.get(period_type)
+        generator = generators.get(self.package.period)
         if not generator:
-            return
+            return []
 
-        periods = generator()
-        if not periods:
-            return
+        amount = self.package.price + self.premium_amount - self.discount_amount
+        return [(s, e, amount) for s, e in generator()]
 
+    def _sync_secondary_orders(self, periods, *, status=None, upcoming_only=False, prune=False):
+        """
+        Reconcile this order's SecondaryOrders with `periods`.
+          - missing periods are created
+          - existing periods keep their row (ternary orders, invoices, order_id)
+            and get subtotal = amount + sum(ternary subtotals); status is only
+            recomputed when it isn't locked
+          - prune=True removes future periods that are no longer wanted, but
+            refuses if one still has services. Past periods and the
+            registration-fee row are never touched.
+        """
+        now = timezone.now()
         if upcoming_only:
-            periods = [(s, e) for s, e in periods if e >= now]
-
+            periods = [p for p in periods if p[1] >= now]
         if not periods:
             return
 
         with transaction.atomic():
-            objects = [
-                SecondaryOrder(
-                    primary_order=self,
-                    start_datetime=slot_start,
-                    end_datetime=slot_end,
-                    subtotal=final_price,
-                    status=secondary_status or auto_update_status(slot_start, slot_end), 
+            existing = {
+                (s.start_datetime, s.end_datetime): s
+                for s in self.secondary_orders.filter(is_registration_fee=False).annotate(
+                    ternary_total=Coalesce(
+                        Sum("ternary_orders__subtotal"), Decimal("0.00")
+                    ),
+                    ternary_count=Count("ternary_orders"),
                 )
-                for slot_start, slot_end in periods
-            ]
+            }
 
-            created = SecondaryOrder.objects.bulk_create(
-                objects,
-                update_conflicts=True,
-                unique_fields=["primary_order", "start_datetime", "end_datetime"],
-                update_fields=["subtotal", "status"],
-            )
+            to_create, to_update = [], []
+            for start, end, amount in periods:
+                new_status = status or auto_update_status(start, end)
+                current = existing.get((start, end))
 
-            for obj in created:
-                if not obj.order_id:
+                if current is None:
+                    to_create.append(
+                        SecondaryOrder(
+                            primary_order=self,
+                            start_datetime=start,
+                            end_datetime=end,
+                            subtotal=amount,
+                            status=new_status,
+                        )
+                    )
+                    continue
+
+                current.subtotal = amount + current.ternary_total
+                if not current.status_locked:
+                    current.status = new_status
+                to_update.append(current)
+
+            if prune and not upcoming_only:
+                wanted = {(s, e) for s, e, _ in periods}
+                stale = [
+                    s for key, s in existing.items()
+                    if key not in wanted and s.end_datetime >= now
+                ]
+                if blocked := [s for s in stale if s.ternary_count]:
+                    dates = ", ".join(
+                        s.start_datetime.date().isoformat() for s in blocked
+                    )
+                    raise ValidationError(
+                        f"Move or cancel the services on these periods first: {dates}."
+                    )
+                SecondaryOrder.objects.filter(pk__in=[s.pk for s in stale]).delete()
+
+            if to_create:
+                created = SecondaryOrder.objects.bulk_create(to_create)
+                for obj in created:
                     obj.order_id = generate_order_id(obj)
+                SecondaryOrder.objects.bulk_update(created, ["order_id"])
 
-            SecondaryOrder.objects.bulk_update(created, ["order_id"])
+            if to_update:
+                SecondaryOrder.objects.bulk_update(to_update, ["subtotal", "status"])
+
             self.recalculate_total()
+
+    def generate_secondary_from_random_dates(
+        self, dates, upcoming_only=False, secondary_status=None, prune=False
+    ):
+        if not dates:
+            return
+        self._sync_secondary_orders(
+            self._periods_from_dates(dates),
+            status=secondary_status,
+            upcoming_only=upcoming_only,
+            prune=prune,
+        )
+
+    def generate_secondary_full_range_dates(
+        self, upcoming_only=False, secondary_status=None, prune=False
+    ):
+        self._sync_secondary_orders(
+            self._periods_full_range(),
+            status=secondary_status,
+            upcoming_only=upcoming_only,
+            prune=prune,
+        )
 
     def generate_next_period_secondary(self):
         """
-        Extends this PrimaryOrder's end_datetime by one package period and
-        delegates to generate_secondary_full_range_dates() to materialize the
-        new SecondaryOrder — reuses the same period math and upsert-on-conflict
-        semantics as the rest of the generation flow. Called nightly by
-        trigger_auto_continue_secondary_orders.
+        Extends end_datetime by one package period and adds the new
+        SecondaryOrder. Existing periods are left alone (upcoming_only=True,
+        no prune). Called nightly by trigger_auto_continue_secondary_orders.
         """
         if not self.auto_continue:
             return None
@@ -706,23 +708,59 @@ class PrimaryOrder(models.Model):
             self.end_datetime = new_end
             self.save(update_fields=["end_datetime"])
             self.generate_secondary_full_range_dates(upcoming_only=True)
-            
+    
+    # ── Actions ────────────────────────────────────────────────────────────────
+    def reschedule(
+        self, new_start, new_end, new_package_id=None,
+        discount_amount=None, premium_amount=None,
+        dates=None, raw_dates=None,
+    ):
+        """`dates` = parsed specific dates/slots; omit for a full-range reschedule."""
+        now = timezone.now()
+
+        if new_start >= new_end:
+            raise ValidationError("Start date must be before end date.")
+        if self.end_datetime < now:
+            raise ValidationError("Past bookings cannot be rescheduled.")
+
+        is_ongoing = self.start_datetime <= now <= self.end_datetime
+        if is_ongoing and new_start != self.start_datetime:
+            raise ValidationError("Cannot change start date of an in-progress booking.")
+
+        with transaction.atomic():
+            self.start_datetime = new_start
+            self.end_datetime = new_end
+            self.raw_dates = raw_dates if dates else None
+
+            if new_package_id:
+                self.package_id = new_package_id
+            if discount_amount is not None:
+                self.discount_amount = discount_amount
+            if premium_amount is not None:
+                self.premium_amount = premium_amount
+
+            self.save()
+
+            if dates:
+                self.generate_secondary_from_random_dates(dates, prune=True)
+            else:
+                self.generate_secondary_full_range_dates(prune=True)
     # ── Period helpers ─────────────────────────────────────────────────────────
     def _get_monthly_periods(self):
         """
         Split range into calendar-month periods anchored to the start date.
-        Example: Feb 4 → Mar 3  =  one period (Feb 4, Mar 3)
-                Feb 4 → Apr 9  =  (Feb 4, Mar 3), (Mar 4, Apr 3), (Apr 4, Apr 9)
+        Example: Feb 4 -> Mar 3  =  one period (Feb 4, Mar 3)
+                 Feb 4 -> Apr 9  =  (Feb 4, Mar 3), (Mar 4, Apr 3), (Apr 4, Apr 9)
         """
         periods = []
         current = self.start_datetime
 
         while current < self.end_datetime:
             next_period_start = current + relativedelta(months=1)
-            # Period ends the day BEFORE next cycle starts
+            # Period ends the day BEFORE the next cycle starts
             period_end = min(
                 next_period_start - timedelta(days=1),
-                self.end_datetime
+                self.end_datetime,
             )
             periods.append((current, period_end))
             current = next_period_start
@@ -763,33 +801,7 @@ class PrimaryOrder(models.Model):
 
         return periods
 
-    # ── Actions ────────────────────────────────────────────────────────────────
-    def reschedule(self, new_start, new_end, new_package_id=None, discount_amount=None, premium_amount=None):
-        now = timezone.now()
-
-        if new_start >= new_end:
-            raise ValidationError("Start date must be before end date.")
-        if self.end_datetime < now:
-            raise ValidationError("Past bookings cannot be rescheduled.")
-
-        is_ongoing = self.start_datetime <= now <= self.end_datetime
-        if is_ongoing and new_start != self.start_datetime:
-            raise ValidationError("Cannot change start date of an in-progress booking.")
-
-        with transaction.atomic():
-            self.start_datetime = new_start
-            self.end_datetime = new_end
-
-            if new_package_id:
-                self.package_id = new_package_id
-            if discount_amount is not None:
-                self.discount_amount = discount_amount
-            if premium_amount is not None:
-                self.premium_amount = premium_amount
-
-            self.save(skip_auto_status=True)
-            self._generate_secondary_and_ternary_orders()
-
+    # ── Totals ─────────────────────────────────────────────────────────────────
     def recalculate_total(self):
         total = self.secondary_orders.aggregate(
             total=Coalesce(Sum("subtotal"), Decimal("0.00"))
