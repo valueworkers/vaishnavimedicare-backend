@@ -729,7 +729,7 @@ class PrimaryOrder(models.Model):
     def _derive_status_from_secondaries(self):
         """
         Roll period statuses up into one primary status.
-        ADJUST CANCELLED / COMPLETED / ONGOING to your BookingStatus members.
+        ADJUST CANCELLED / FULFILLED / IN_PROGRESS to your BookingStatus members.
         """
         S = BookingStatus
         statuses = list(
@@ -744,12 +744,12 @@ class PrimaryOrder(models.Model):
         if not active:
             return S.CANCELLED
  
-        if all(s == S.COMPLETED for s in active):
+        if all(s == S.FULFILLED for s in active):
             # auto_continue orders get a new period nightly -> never "complete"
-            return S.ONGOING if self.auto_continue else S.COMPLETED
+            return S.IN_PROGRESS if self.auto_continue else S.FULFILLED
  
-        if any(s in (S.ONGOING, S.COMPLETED) for s in active):
-            return S.ONGOING
+        if any(s in (S.IN_PROGRESS, S.FULFILLED) for s in active):
+            return S.IN_PROGRESS
  
         return active[0]  # nothing started yet -> status of the first period
  

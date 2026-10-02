@@ -531,7 +531,7 @@ class PrimaryOrderViewSet(viewsets.ModelViewSet):
         'updated_at',
     ]
     
-    ordering = ['-created_at']  # or '-created_at' — see note below
+    ordering = ['-created_at'] 
 
     
     # ── Queryset ───────────────────────────────────────────────────────────────
@@ -610,7 +610,7 @@ class PrimaryOrderViewSet(viewsets.ModelViewSet):
         if package_id := data.get('package'):
             package = Package.objects.get(id=package_id)
 
-        raw_dates = data.get('dates', data.get('raw_dates'))
+        raw_dates = data.get('raw_dates')
         parsed = None
         if raw_dates:
             parsed = DateParser.parse_dates(package.period, raw_dates)
@@ -621,7 +621,6 @@ class PrimaryOrderViewSet(viewsets.ModelViewSet):
 
         if start >= end:
             raise ValidationError({"detail": "Start date must be before end date."})
-
         return {
             'package': package,
             'start_datetime': start,
@@ -712,7 +711,7 @@ class PrimaryOrderViewSet(viewsets.ModelViewSet):
                 schedule, parsed = self._resolve_schedule(order, data)
 
             other = {k: v for k, v in data.items() if k not in self.SCHEDULE_FIELDS}
-            serializer = PrimaryOrderCreateSerializer(order, data=other, partial=True)
+            serializer = PrimaryOrderUpdateSerializer(order, data=other, partial=True)
             serializer.is_valid(raise_exception=True)
 
             # schedule values go straight onto the instance via save(**kwargs)

@@ -538,6 +538,7 @@ class PrimaryOrderSerializer(serializers.ModelSerializer):
 
     def get_secondary_orders_count(self,obj):
         return obj.secondary_orders.count()
+
 class PrimaryOrderCreateSerializer(serializers.ModelSerializer):
     """
     Write serializer for creating a PrimaryOrder.
@@ -583,12 +584,17 @@ class PrimaryOrderCreateSerializer(serializers.ModelSerializer):
         }
 
     def validate(self, data):
+        print("Validating PrimaryOrder data:", data.keys())
         errors = {}
 
         # ── Dates ────────────────────────────────────────────────
         has_dates = 'raw_dates' in data
         start = data.get('start_datetime')
         end = data.get('end_datetime')
+        print("has_dates",has_dates)
+        print("start",start)
+        print("end",end)
+
 
         if not has_dates:
             if not start:
@@ -627,6 +633,63 @@ class PrimaryOrderCreateSerializer(serializers.ModelSerializer):
 
         return data
 
+class PrimaryOrderUpdateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PrimaryOrder
+        fields = [
+            'patient',
+            'venue',
+            'service',
+            'package',
+            'booking_type',
+            'client_address',
+            'start_datetime',
+            'end_datetime',
+            'discount_amount',
+            'premium_amount',
+            'auto_continue',
+            'raw_dates',
+        ]
+        extra_kwargs = {
+            'service':          {'required': False},
+            'venue':            {'required': False},
+            'start_datetime':   {'required': False},
+            'end_datetime':     {'required': False},
+            'client_address':   {'required': False},
+            'discount_amount':  {'required': False},
+            'premium_amount':   {'required': False},
+        }
+
+    def validate(self, data):
+        errors = {}
+
+        # ── venue / client_address rules by booking_type ───────────
+        booking_type = data.get('booking_type')
+        venue = data.get('venue')
+        client_address = data.get('client_address')
+
+        if booking_type == BookingType.IN_HOUSE:
+            if not venue:
+                errors["venue"] = "Venue is required for IN_HOUSE bookings."
+        elif booking_type == BookingType.OPD:
+            if not venue and not client_address:
+                errors["non_field_errors"] = (
+                    errors.get("non_field_errors", "")
+                    + " Either venue or client_address is required for OPD bookings."
+                ).strip()
+        elif booking_type == BookingType.CLIENT_SIDE:
+            if not client_address:
+                errors["client_address"] = "Client address is required for CLIENT_SIDE bookings."
+
+        if errors:
+            raise serializers.ValidationError(errors)
+
+        # ── booking_entity: infer, don't hardcode ───────────────────
+        data["booking_entity"] = (
+            BookingEntity.VENUE if venue else BookingEntity.SERVICE
+        )
+
+        return data
      
 class PaymentSerializer(serializers.ModelSerializer):
     """Serializer for Payment model"""
