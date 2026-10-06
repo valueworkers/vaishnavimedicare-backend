@@ -73,13 +73,13 @@ MIDDLEWARE = [
 CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOW_CREDENTIALS = True
 
-CSRF_TRUSTED_ORIGINS = [
-    "https://vaishnavimedicare.com",
-    "https://valueoccasions.com",
-    "https://168.144.213.88",
-    "http://localhost:3000",
-    "http://localhost:5173",
-]
+# CSRF_TRUSTED_ORIGINS = [
+#     "https://vaishnavimedicare.com",
+#     "https://valueoccasions.com",
+#     "https://168.144.213.88",
+#     "http://localhost:3000",
+#     "http://localhost:5173",
+# ]
 
 SECURE_PROXY_SSL_HEADER = (
     "HTTP_X_FORWARDED_PROTO",
