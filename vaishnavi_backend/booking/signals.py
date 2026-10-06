@@ -32,7 +32,7 @@ def update_invoice_on_payment_save(sender, instance, **kwargs):
 
         if invoice is None:
             return  # or create it, if every booking should have an invoice
-        invoice.invoice.recalculate_payments()
+        invoice.recalculate_payments()
 
     transaction.on_commit(_recalculate)
 
