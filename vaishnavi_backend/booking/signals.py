@@ -1,6 +1,7 @@
 from django.db.models.signals import post_save,post_delete
 from django.dispatch import receiver
 from django.db import transaction
+from django.core.exceptions import ObjectDoesNotExist
 from .models import PrimaryOrder, SecondaryOrder,TernaryOrder, TotalInvoice, BookingStatus, Payment
 
   
@@ -23,10 +24,15 @@ def refresh_primary_from_secondary(sender, instance, **kwargs):
 def update_invoice_on_payment_save(sender, instance, **kwargs):
     """Recalculate invoice when payment is created or updated"""
     
-    def _recalculate():
-        invoice = getattr(instance, 'invoice', None)
-        if invoice:
-            invoice.recalculate_payments()
+    def _recalculate():    
+        try:
+            invoice = instance.invoice
+        except ObjectDoesNotExist:
+            invoice = None
+
+        if invoice is None:
+            return  # or create it, if every booking should have an invoice
+        invoice.invoice.recalculate_payments()
 
     transaction.on_commit(_recalculate)
 
@@ -37,9 +43,14 @@ def update_invoice_on_payment_delete(sender, instance, **kwargs):
     Recalculate invoice totals when a payment is deleted.
     """
     def _recalculate():    
-        invoice = getattr(instance, 'invoice', None)
-        if invoice:
-            invoice.recalculate()   # whatever you call on line 25+
+        try:
+            invoice = instance.invoice
+        except ObjectDoesNotExist:
+            invoice = None
+
+        if invoice is None:
+            return  # or create it, if every booking should have an invoice
+        invoice.recalculate()
 
     transaction.on_commit(_recalculate)
 
