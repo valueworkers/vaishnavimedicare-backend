@@ -20,13 +20,15 @@ class Command(BaseCommand):
         parser.add_argument("--patient", type=int, help="Only rebuild this patient's secondary orders.")
 
     def handle(self, *args, **options):
-        orders = PrimaryOrder.objects.select_related("package").order_by("patient_id", "id")
+        orders = PrimaryOrder.objects.select_related("package").filter(id=235).order_by("patient_id", "id")
         if options["patient"] is not None:
             orders = orders.filter(patient_id=options["patient"])
 
         checked = 0
         with transaction.atomic():
             for order in orders:
+                self.stdout.write(f"Checking : {order.secondary_orders.all()}")
+
                 before = order.secondary_orders.count()
                 if order.raw_dates:
                     order.generate_secondary_from_random_dates(order.raw_dates,prune=True)
@@ -34,13 +36,18 @@ class Command(BaseCommand):
                     order.generate_secondary_full_range_dates(prune=True)
                 after = order.secondary_orders.count()
                 checked += 1
-                self.stdout.write(
-                    f"patient:{order.patient_id} primary id:{order.pk}\t "
-                    f"{before} -> {after}"
+                if before != after :
+                    self.stdout.write(
+                        self.style.WARNING(
+                            f"patient:{order.patient_id} primary id:{order.pk}\t "
+                            f"{before} -> {after}"
+                        ) 
                 )
                 
+
             if not options["apply"]:
                 transaction.set_rollback(True)
 
         mode = "APPLIED" if options["apply"] else "DRY RUN (rolled back)"
         self.stdout.write(self.style.SUCCESS(f"[{mode}] {checked} primary order(s) checked."))
+
