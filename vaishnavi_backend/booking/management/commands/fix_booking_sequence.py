@@ -38,7 +38,7 @@ class Command(BaseCommand):
                     f"patient:{order.patient_id} primary id:{order.pk}\t "
                     f"{before} -> {after}"
                 )
-
+                
             if not options["apply"]:
                 transaction.set_rollback(True)
 
