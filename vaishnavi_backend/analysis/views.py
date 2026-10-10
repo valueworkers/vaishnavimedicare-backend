@@ -1,7 +1,7 @@
 import calendar
 from collections import defaultdict
 from decimal import Decimal, ROUND_HALF_UP
-from datetime import date
+from datetime import date, timedelta
 from payroll.models import Attendance, AttendanceStatus
 from payroll.models import SalaryStructure, SalaryTransaction
 
@@ -18,7 +18,8 @@ from rest_framework.views import APIView
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 
-from booking.models import SecondaryOrder, TernaryOrder, TotalInvoice, Payment, PaymentMethod
+from booking.models import PrimaryOrder, SecondaryOrder, TernaryOrder, TotalInvoice, Payment, PaymentMethod, BookingStatus
+from accounts.models import CustomUser
 
 from .filters import (
     ALLOWED_EMPLOYEE_SORT_FIELDS,
@@ -36,6 +37,74 @@ from .serializers import (
 
 
 ZERO = Decimal("0.00")
+
+
+class DashboardKPIAPIView(APIView):
+    """Period dashboard totals. Pass period=daily|weekly|monthly|quarterly|yearly.
+
+    Optional start_date and end_date (YYYY-MM-DD) override the period boundaries.
+    """
+
+    def get(self, request):
+        today = date.today()
+        period = request.query_params.get("period", "daily").lower()
+        if period not in {"daily", "weekly", "monthly", "quarterly", "yearly"}:
+            raise ValidationError({"period": "Use daily, weekly, monthly, quarterly, or yearly."})
+        if period == "weekly":
+            start, end = today - timedelta(days=today.weekday()), today
+        elif period == "monthly":
+            start, end = today.replace(day=1), today
+        elif period == "quarterly":
+            q_start_month = ((today.month - 1) // 3) * 3 + 1
+            start, end = today.replace(month=q_start_month, day=1), today
+        elif period == "yearly":
+            start, end = today.replace(month=1, day=1), today
+        else:
+            start = end = today
+
+        try:
+            start = date.fromisoformat(request.query_params.get("start_date", start.isoformat()))
+            end = date.fromisoformat(request.query_params.get("end_date", end.isoformat()))
+        except ValueError:
+            raise ValidationError({"date": "Dates must use YYYY-MM-DD."})
+        if start > end:
+            raise ValidationError({"date": "start_date must be on or before end_date."})
+
+        staff_roles = ["VSRE_STAFF", "VSRE_MANAGER", "LINE_MANAGER"]
+        new_staff = CustomUser.objects.filter(user_type__in=staff_roles, date_joined__range=(start, end), is_deleted=False).count()
+        new_customers = CustomUser.objects.filter(user_type="CUSTOMER", date_joined__range=(start, end), is_deleted=False).count()
+        bookings = PrimaryOrder.objects.filter(created_at__date__range=(start, end))
+        fulfilled = PrimaryOrder.objects.filter(updated_at__date__range=(start, end), status=BookingStatus.FULFILLED).count()
+        preclosed = PrimaryOrder.objects.filter(
+            updated_at__date__range=(start, end),
+            status__in=[BookingStatus.CANCELLED, BookingStatus.UNFULFILLED],
+        ).count()
+        paid = Payment.objects.filter(paid_date__date__range=(start, end), is_verified=True).aggregate(total=Sum("amount"))["total"] or ZERO
+        salary = SalaryTransaction.objects.filter(paid_at__date__range=(start, end), status="SUCCESS").aggregate(total=Sum("amount_paid"))["total"] or ZERO
+        absent_users = Attendance.objects.filter(
+            date__range=(start, end), status__code__icontains="ABSENT"
+        ).values("user_id").distinct().count()
+        # Assignments are modeled as staff M2Ms on venues, services, and resources.
+        staff = CustomUser.objects.filter(user_type="VSRE_STAFF", is_deleted=False)
+        unutilised = staff.exclude(
+            Q(assigned_venues__isnull=False)
+            | Q(assigned_services__isnull=False)
+            | Q(assigned_resource__isnull=False)
+        ).distinct().count()
+        return Response({
+            "period": period, "start_date": start, "end_date": end,
+            "new_staff_onboarded": new_staff,
+            "new_customers_onboarded": new_customers,
+            "bookings_created": bookings.count(),
+            "bookings_fulfilled": fulfilled,
+            "bookings_preclosed": preclosed,
+            "amount_collected": paid,
+            "staff_payout": salary,
+            "other_spend": ZERO,
+            "staff_absent": absent_users,
+            "staff_unutilised": unutilised,
+            "other_spend_source": "No non-payroll expense model is configured.",
+        })
 
 
 class SalaryAnalysisAPIView(PermissionScopeMixin, APIView):

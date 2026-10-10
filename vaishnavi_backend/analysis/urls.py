@@ -3,7 +3,8 @@ from .views import (
     SalaryAnalysisAPIView,
     UserAttendanceAPIView,
     PaymentMasterViewSet,
-    InvoiceListViewSet
+    InvoiceListViewSet,
+    DashboardKPIAPIView,
 )
 from rest_framework.routers import DefaultRouter
 
@@ -17,5 +18,6 @@ urlpatterns = [
     path('', include(router.urls)),
     path("salary/", SalaryAnalysisAPIView.as_view(), name="salary-analysis"),
     path('attendance/', UserAttendanceAPIView.as_view(), name='attendance-analysis'),
+    path('dashboard-kpis/', DashboardKPIAPIView.as_view(), name='dashboard-kpis'),
 
 ]

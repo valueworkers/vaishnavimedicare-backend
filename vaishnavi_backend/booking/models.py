@@ -600,12 +600,14 @@ class PrimaryOrder(models.Model):
         - leftover old rows: future ones are removed (refused if they have
             services); past ones and the registration-fee row are never touched
         """
+        MAX_PERIOD = timedelta(days=30)
         now = timezone.now()
+        periods = [(s, min(e, s + MAX_PERIOD), a) for s, e, a in periods]  # never > 30 days
         if upcoming_only:
             periods = [p for p in periods if p[1] >= now]
         if not periods:
             return
-
+        
         with transaction.atomic():
             existing = {
                 (s.start_datetime, s.end_datetime): s
@@ -649,7 +651,7 @@ class PrimaryOrder(models.Model):
                         still_new.append((start, end, amount))
                 unmatched_new = still_new
 
-                # 3. whatever is left over: drop future rows, keep past ones
+                # 3a. whatever is left over: drop future rows, keep past ones
                 stale = [s for s in orphans if s.end_datetime >= now]
                 if blocked := [s for s in stale if s.ternary_count]:
                     dates = ", ".join(s.start_datetime.date().isoformat() for s in blocked)
@@ -657,7 +659,17 @@ class PrimaryOrder(models.Model):
                         f"Move or cancel the services on these periods first: {dates}."
                     )
                 SecondaryOrder.objects.filter(pk__in=[s.pk for s in stale]).delete()
-                
+                orphans = [s for s in orphans if s.end_datetime < now]  # stale ones are gone
+
+                # 3b. leftover rows longer than 30 days -> end = start + 30 days
+                #     (same rule as: end - start > 30 days  =>  end = start + 30 days)
+                taken = {(st, en) for st, en, _ in periods} | set(existing)
+                for s in orphans:
+                    new_end = s.start_datetime + MAX_PERIOD
+                    if s.end_datetime - s.start_datetime > MAX_PERIOD and (s.start_datetime, new_end) not in taken:
+                        s.end_datetime = new_end
+                        to_update.append(s)
+
             # 4. create the rest
             for start, end, amount in unmatched_new:
                 to_create.append(
@@ -802,6 +814,7 @@ class PrimaryOrder(models.Model):
             )
             periods.append((current, period_end))
             current = next_period_start
+        print(f"Monthly periods: {periods}")
 
         return periods
 
