@@ -320,16 +320,13 @@ class EmployeeViewSet(viewsets.ModelViewSet):
 
         serializer.save(user_type=user_type, created_by=request_user)
 
-    def perform_update(self, serializer):
-        # user_type is read-only on the serializer, so it cannot be escalated here
-        serializer.save()
-
     def perform_destroy(self, instance):
-        profile = getattr(instance, "employee_profile", None)
-
         serializer = EmployeeTerminationSerializer(data=self.request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
+
+        # Users created without an employment record still need to be terminable
+        profile, _ = EmployeeProfile.objects.get_or_create(user=instance)
 
         try:
             profile.terminate(
@@ -338,8 +335,27 @@ class EmployeeViewSet(viewsets.ModelViewSet):
                 last_working_day=data.get("last_working_day"),
             )
         except DjangoValidationError as e:
-            raise ValidationError(e.message_dict)
+            raise ValidationError(e.message_dict if hasattr(e, "error_dict") else e.messages)
 
+    @action(detail=True, methods=["post"], url_path="termination-revoke")
+    def termination_revoke(self, request, pk=None):
+        employee = self.get_object()
+        profile = getattr(employee, "employee_profile", None)
+        if profile is None:
+            raise ValidationError({"detail": "This user has no employee profile."})
+
+        raw = request.data.get("rehired_status", False)
+        rehired_status = raw is True or str(raw).lower() in ("true", "1", "yes")
+
+        try:
+            profile.termination_revoke(rehired_status)
+        except DjangoValidationError as e:
+            raise ValidationError(e.message_dict if hasattr(e, "error_dict") else e.messages)
+
+        employee.refresh_from_db()
+        return Response(
+            EmployeeListSerializer(employee, context=self.get_serializer_context()).data
+        )
     @action(detail=True, methods=["post"], url_path="termination-revoke")
     def termination_revoke(self, request, pk=None):
         employee = self.get_object()
