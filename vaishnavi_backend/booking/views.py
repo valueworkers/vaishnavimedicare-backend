@@ -997,7 +997,7 @@ class SecondaryOrderViewSet(viewsets.ModelViewSet):
         instance.delete()
         primary.refresh_from_secondaries(sync_dates=True)
 
-    @action(detail=True, methods=["post"], url_path="generate-invoice")
+    @action(detail=True, methods=["post"], url_path="generate-invoice",serializer_class=TotalInvoiceSerializer)
     def generate_invoice(self, request, pk=None):
         """
         POST /secondary-orders/<id>/generate-invoice/
@@ -1007,10 +1007,6 @@ class SecondaryOrderViewSet(viewsets.ModelViewSet):
         already exists. Returns 201 when newly created, 200 when updated.
         """
         secondary = self.get_object()   # runs IsOwnerOrReadOnly object permission
-
-        include_ternary = (
-            request.query_params.get("include_ternary", "").lower() in ("1", "true", "yes")
-        )
 
         existed = TotalInvoice.objects.filter(secondary_order=secondary).exists()
 
@@ -1026,11 +1022,7 @@ class SecondaryOrderViewSet(viewsets.ModelViewSet):
                     )
 
         data = TotalInvoiceSerializer(invoice).data
-        if include_ternary:
-            data["ternary_invoices"] = TotalInvoiceSerializer(
-                ternary_invoices, many=True
-            ).data
-
+        
         return Response(
             data,
             status=http_status.HTTP_200_OK if existed else http_status.HTTP_201_CREATED,
