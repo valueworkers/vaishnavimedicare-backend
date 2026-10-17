@@ -1,7 +1,13 @@
-from rest_framework.pagination import PageNumberPagination
-from rest_framework.pagination import PageNumberPagination
+from rest_framework.pagination import PageNumberPagination, CursorPagination
 from rest_framework.response import Response
 import math
+
+class StandardCursorPagination(CursorPagination):
+    page_size = 25
+    page_size_query_param = "page_size"
+    max_page_size = 1000
+    cursor_query_param = "cursor"
+    
 
 class StandardResultsSetPagination(PageNumberPagination):
     page_size = 10
