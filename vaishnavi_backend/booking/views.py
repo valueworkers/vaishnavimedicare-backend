@@ -997,6 +997,7 @@ class SecondaryOrderViewSet(viewsets.ModelViewSet):
         instance.delete()
         primary.refresh_from_secondaries(sync_dates=True)
 
+   
     @action(detail=True, methods=["post"], url_path="generate-invoice")
     def generate_invoice(self, request, pk=None):
         """
@@ -1011,10 +1012,12 @@ class SecondaryOrderViewSet(viewsets.ModelViewSet):
 
         with transaction.atomic():
             invoice = TotalInvoice.create_or_update_for_secondary(secondary)
-        
+
         return Response(
-            TotalInvoiceSerializer(invoice).data,
-            status=status.HTTP_200_OK if existed else status.HTTP_201_CREATED,
+            {
+                "detail": f"Invoice{existed.id} updated successfully." if existed else f"Invoice:{invoice.id} created successfully."
+            },
+            status.HTTP_200_OK if existed else status.HTTP_201_CREATED,
         )
     
 class LobbyOrderViewSet(viewsets.ModelViewSet):
