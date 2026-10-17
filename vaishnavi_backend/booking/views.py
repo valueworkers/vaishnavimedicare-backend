@@ -1014,7 +1014,7 @@ class SecondaryOrderViewSet(viewsets.ModelViewSet):
         
         return Response(
             TotalInvoiceSerializer(invoice).data,
-            status=http_status.HTTP_200_OK if existed else http_status.HTTP_201_CREATED,
+            status=status.HTTP_200_OK if existed else status.HTTP_201_CREATED,
         )
     
 class LobbyOrderViewSet(viewsets.ModelViewSet):
