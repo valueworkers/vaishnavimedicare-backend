@@ -997,11 +997,10 @@ class SecondaryOrderViewSet(viewsets.ModelViewSet):
         instance.delete()
         primary.refresh_from_secondaries(sync_dates=True)
 
-    @action(detail=True, methods=["post"], url_path="generate-invoice",serializer_class=TotalInvoiceSerializer)
+    @action(detail=True, methods=["post"], url_path="generate-invoice")
     def generate_invoice(self, request, pk=None):
         """
         POST /secondary-orders/<id>/generate-invoice/
-            ?include_ternary=true   (optional: also invoice each ternary add-on)
 
         Creates the invoice for this booking period, or refreshes it if one
         already exists. Returns 201 when newly created, 200 when updated.
@@ -1012,19 +1011,9 @@ class SecondaryOrderViewSet(viewsets.ModelViewSet):
 
         with transaction.atomic():
             invoice = TotalInvoice.create_or_update_for_secondary(secondary)
-
-            ternary_invoices = []
-            if include_ternary:
-                # create the secondary first so parent_invoice is linked
-                for ternary in secondary.ternary_orders.all():
-                    ternary_invoices.append(
-                        TotalInvoice.create_or_update_for_ternary(ternary)
-                    )
-
-        data = TotalInvoiceSerializer(invoice).data
         
         return Response(
-            data,
+            TotalInvoiceSerializer(invoice).data,
             status=http_status.HTTP_200_OK if existed else http_status.HTTP_201_CREATED,
         )
     
